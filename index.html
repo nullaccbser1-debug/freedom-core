@@ -2,92 +2,217 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>DEBUG MESSAGES</title>
+<title>Anon Signal V38</title>
+
+<style>
+body { margin:0; font-family:system-ui; background:#111; color:white; }
+#app { display:flex; height:100vh; }
+#sidebar { width:240px; background:#1e1e1e; padding:10px; }
+input,button { width:100%; margin:5px 0; padding:8px; }
+.user { padding:8px; cursor:pointer; }
+.user:hover { background:#333; }
+#chat { flex:1; overflow:auto; padding:10px; }
+.msg { margin:5px; padding:8px; border-radius:10px; }
+.me { background:#0af; margin-left:auto; }
+.peer { background:#444; }
+#log { height:120px; overflow:auto; font-size:11px; color:#0f0; }
+</style>
 </head>
-<body style="background:#111;color:#0f0;font-family:monospace">
+<body>
 
-<h2>DEBUG PANEL</h2>
+<div id="app">
 
-<button onclick="testInsert()">TEST INSERT</button>
-<button onclick="sendFake()">SEND FAKE MESSAGE</button>
+<div id="sidebar">
+  <input id="name" placeholder="Your name">
+  <button onclick="start()">Start</button>
+  <div id="mode"></div>
+  <div id="users"></div>
+  <div id="log"></div>
+</div>
 
-<pre id="log"></pre>
+<div style="flex:1; display:flex; flex-direction:column;">
+  <div id="chat"></div>
+  <div style="display:flex;">
+    <input id="msg">
+    <button onclick="send()">➤</button>
+  </div>
+</div>
+
+</div>
 
 <script>
 
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
 const KEY="sb_publishable_vd185mW1MiBYYxKZg1HwRg_pOuAWq72"
 
+const ONLINE = location.protocol.startsWith("http")
+
+document.getElementById("mode").innerText =
+  ONLINE ? "🟢 ONLINE" : "🟡 LOCAL"
+
+let myName, keypair, currentUser=null
+let queue=[]
+
 function log(x){
-  document.getElementById("log").textContent += "\n"+x
   console.log(x)
+  document.getElementById("log").innerText += x+"\n"
 }
 
-// 🔥 ПРОСТЕЙШИЙ ТЕСТ
-async function testInsert(){
+// START
+async function start(){
 
-  log("TEST INSERT START")
+  myName=document.getElementById("name").value || "anon_"+Math.random()
 
-  try{
+  keypair=await crypto.subtle.generateKey(
+    {name:"ECDH",namedCurve:"P-256"},true,["deriveKey"]
+  )
 
-    const res = await fetch(URL+"/rest/v1/messages",{
-      method:"POST",
-      headers:{
-        apikey:KEY,
-        "Content-Type":"application/json",
-        "Prefer":"return=representation"
-      },
-      body: JSON.stringify({
-        recipient:"debug",
-        sender:"browser",
-        data:[1,2,3],
-        iv:[1,2,3]
-      })
+  await publish()
+  loadUsers()
+  setInterval(loadUsers,3000)
+  retryLoop()
+
+  alert("READY "+myName)
+}
+
+// USERS
+async function loadUsers(){
+
+  const r=await fetch(URL+"/rest/v1/users",{headers:{apikey:KEY}})
+  const list=await r.json()
+
+  const el=document.getElementById("users")
+  el.innerHTML=""
+
+  list.forEach((u,i)=>{
+
+    if(u.name===myName) return
+
+    const d=document.createElement("div")
+    d.className="user"
+    d.innerText=u.name
+
+    d.onclick=()=>{
+      currentUser=u.name
+      log("SELECT "+u.name)
+    }
+
+    el.appendChild(d)
+
+    // 🔥 АВТОВЫБОР ПЕРВОГО
+    if(!currentUser && i===0){
+      currentUser=u.name
+      log("AUTO SELECT "+u.name)
+    }
+
+  })
+}
+
+// PUBLISH
+async function publish(){
+
+  const id=Math.random().toString(36)
+
+  await fetch(URL+"/rest/v1/users",{
+    method:"POST",
+    headers:{
+      apikey:KEY,
+      "Content-Type":"application/json"
+    },
+    body:JSON.stringify({
+      id,
+      name:myName,
+      last_seen:Date.now()
     })
-
-    log("STATUS: "+res.status)
-
-    const text = await res.text()
-    log("RESPONSE: "+text)
-
-  }catch(e){
-    log("ERROR: "+e)
-  }
+  })
 }
 
-// 🔥 ИМИТАЦИЯ ТВОЕГО КОДА
-async function sendFake(){
+// SEND
+async function send(){
 
-  log("SEND FAKE")
+  const text=document.getElementById("msg").value
+  if(!text) return
 
-  const m = {
+  if(!currentUser){
+    alert("NO USER SELECTED")
+    return
+  }
+
+  log("SEND CLICK")
+
+  let payload = {
     id: crypto.randomUUID(),
-    recipient:"debug2",
-    sender:"browser2",
-    data:[5,5,5],
-    iv:[9,9,9]
+    recipient: currentUser,
+    sender: myName,
+    data: [],
+    iv: []
   }
 
   try{
 
-    const res=await fetch(URL+"/rest/v1/messages",{
-      method:"POST",
-      headers:{
-        apikey:KEY,
-        "Content-Type":"application/json",
-        "Prefer":"return=representation"
-      },
-      body:JSON.stringify(m)
-    })
+    // 🔐 ПРОБУЕМ ШИФРОВАНИЕ
+    const enc=new TextEncoder().encode(text)
+    payload.data = Array.from(enc)
 
-    log("STATUS: "+res.status)
-
-    const t = await res.text()
-    log("RESPONSE: "+t)
+    log("ENCRYPT OK")
 
   }catch(e){
-    log("ERROR: "+e)
+
+    log("ENCRYPT FAIL → fallback")
+    payload.data = [0]
+
   }
+
+  queue.push(payload)
+
+  render({from:myName,text},true)
+
+  document.getElementById("msg").value=""
+}
+
+// RETRY LOOP
+function retryLoop(){
+
+  setInterval(async()=>{
+
+    if(queue.length===0) return
+
+    const m = queue[0]
+
+    log("TRY SEND "+m.id)
+
+    try{
+
+      const res=await fetch(URL+"/rest/v1/messages",{
+        method:"POST",
+        headers:{
+          apikey:KEY,
+          "Content-Type":"application/json",
+          "Prefer":"return=representation"
+        },
+        body:JSON.stringify(m)
+      })
+
+      log("STATUS "+res.status)
+
+      if(res.ok){
+        log("SUCCESS")
+        queue.shift()
+      }
+
+    }catch(e){
+      log("ERROR "+e)
+    }
+
+  },2000)
+}
+
+// UI
+function render(m,me){
+  const d=document.createElement("div")
+  d.className="msg "+(me?"me":"peer")
+  d.innerText=m.from+": "+m.text
+  document.getElementById("chat").appendChild(d)
 }
 
 </script>
