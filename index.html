@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V39</title>
+<title>Anon Signal V39.1</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -15,6 +15,7 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 .msg { margin:5px; padding:8px; border-radius:10px; }
 .me { background:#0af; margin-left:auto; }
 .peer { background:#444; }
+#mode { font-size:12px; opacity:0.7; margin-bottom:5px; }
 </style>
 </head>
 <body>
@@ -24,6 +25,7 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 <div id="sidebar">
   <input id="name" placeholder="Your name">
   <button onclick="start()">Start</button>
+  <div id="mode"></div>
   <div id="users"></div>
 </div>
 
@@ -39,25 +41,46 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 
 <script>
 
+// 🔥 ТВОЙ САЙТ
+const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
+
+// 🔥 ОПРЕДЕЛЕНИЕ РЕЖИМА
+const protocol = location.protocol
+
+const isLocal =
+  protocol === "file:" ||
+  protocol === "content:"
+
+// 🔥 АВТО-ПЕРЕХОД (АККУРАТНЫЙ)
+if(isLocal){
+  console.log("Redirecting to online mode...")
+  setTimeout(()=>{
+    location.href = ONLINE_URL
+  }, 700)
+}
+
+// UI статус
+document.getElementById("mode").innerText =
+  isLocal ? "🟡 LOCAL → redirecting..." : "🟢 ONLINE"
+
+// ======= НИЖЕ ВСЁ КАК В V39 (НЕ ТРОГАЕМ) =======
+
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
 const KEY="sb_publishable_vd185mW1MiBYYxKZg1HwRg_pOuAWq72"
 
 let myName, myId, currentUser=null
 let seen = new Set()
 
-// HASH
 async function hashStr(str){
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str))
   return Array.from(new Uint8Array(buf))
     .map(b=>b.toString(16).padStart(2,"0")).join("")
 }
 
-// 🔥 CHAT ID
 async function getChatId(a,b){
   return (await hashStr([a,b].sort().join("|"))).slice(0,32)
 }
 
-// START
 async function start(){
 
   myName=document.getElementById("name").value || "anon"
@@ -73,7 +96,6 @@ async function start(){
   alert("READY "+myName)
 }
 
-// USERS
 async function loadUsers(){
 
   const r=await fetch(URL+"/rest/v1/users",{headers:{apikey:KEY}})
@@ -99,7 +121,6 @@ async function loadUsers(){
   })
 }
 
-// PUBLISH
 async function publish(){
 
   const keypair=await crypto.subtle.generateKey(
@@ -130,7 +151,6 @@ async function publish(){
   })
 }
 
-// SEND
 async function send(){
 
   if(!currentUser) return
@@ -165,7 +185,6 @@ async function send(){
   document.getElementById("msg").value=""
 }
 
-// LOAD HISTORY
 async function loadHistory(){
 
   const chatId=await getChatId(myName,currentUser)
@@ -185,7 +204,6 @@ async function loadHistory(){
   })
 }
 
-// POLL
 function poll(){
 
   setInterval(async()=>{
@@ -214,7 +232,6 @@ function poll(){
   },1500)
 }
 
-// UI
 function render(m,me){
   const d=document.createElement("div")
   d.className="msg "+(me?"me":"peer")
