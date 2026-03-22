@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V38.2</title>
+<title>Anon Signal V39</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -15,7 +15,6 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 .msg { margin:5px; padding:8px; border-radius:10px; }
 .me { background:#0af; margin-left:auto; }
 .peer { background:#444; }
-#log { height:120px; overflow:auto; font-size:11px; color:#0f0; }
 </style>
 </head>
 <body>
@@ -25,9 +24,7 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 <div id="sidebar">
   <input id="name" placeholder="Your name">
   <button onclick="start()">Start</button>
-  <div id="mode"></div>
   <div id="users"></div>
-  <div id="log"></div>
 </div>
 
 <div style="flex:1; display:flex; flex-direction:column;">
@@ -44,20 +41,9 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
 const KEY="sb_publishable_vd185mW1MiBYYxKZg1HwRg_pOuAWq72"
-const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
-
-if(location.protocol==="file:"||location.protocol==="content:"){
-  setTimeout(()=>location.href=ONLINE_URL,800)
-}
 
 let myName, myId, currentUser=null
-let keypair, prekeyPair
-let queue=[]
-
-function log(x){
-  console.log(x)
-  document.getElementById("log").innerText += x+"\n"
-}
+let seen = new Set()
 
 // HASH
 async function hashStr(str){
@@ -66,57 +52,25 @@ async function hashStr(str){
     .map(b=>b.toString(16).padStart(2,"0")).join("")
 }
 
+// 🔥 CHAT ID
+async function getChatId(a,b){
+  return (await hashStr([a,b].sort().join("|"))).slice(0,32)
+}
+
 // START
 async function start(){
 
   myName=document.getElementById("name").value || "anon"
-
   myId=(await hashStr(myName)).slice(0,32)
-
-  // 🔐 КЛЮЧИ
-  keypair=await crypto.subtle.generateKey(
-    {name:"ECDH",namedCurve:"P-256"},true,["deriveKey"]
-  )
-
-  prekeyPair=await crypto.subtle.generateKey(
-    {name:"ECDH",namedCurve:"P-256"},true,["deriveKey"]
-  )
 
   await publish()
 
   loadUsers()
   setInterval(loadUsers,3000)
 
-  retryLoop()
+  poll()
 
   alert("READY "+myName)
-}
-
-// ✅ FIXED PUBLISH
-async function publish(){
-
-  const pub=await crypto.subtle.exportKey("jwk",keypair.publicKey)
-  const pre=await crypto.subtle.exportKey("jwk",prekeyPair.publicKey)
-
-  log("PUBLISH "+myName)
-
-  const res=await fetch(URL+"/rest/v1/users",{
-    method:"POST",
-    headers:{
-      apikey:KEY,
-      "Content-Type":"application/json",
-      "Prefer":"resolution=merge-duplicates"
-    },
-    body:JSON.stringify({
-      id: myId,
-      pubkey: pub,
-      prekey: pre,
-      name: myName,
-      last_seen: Date.now()
-    })
-  })
-
-  log("PUBLISH STATUS "+res.status)
 }
 
 // USERS
@@ -128,7 +82,7 @@ async function loadUsers(){
   const el=document.getElementById("users")
   el.innerHTML=""
 
-  list.forEach((u,i)=>{
+  list.forEach(u=>{
 
     if(u.id===myId) return
 
@@ -138,64 +92,124 @@ async function loadUsers(){
 
     d.onclick=()=>{
       currentUser=u.name
-      log("SELECT "+u.name)
+      loadHistory()
     }
 
     el.appendChild(d)
+  })
+}
 
-    if(!currentUser && i===0){
-      currentUser=u.name
-      log("AUTO "+u.name)
-    }
+// PUBLISH
+async function publish(){
 
+  const keypair=await crypto.subtle.generateKey(
+    {name:"ECDH",namedCurve:"P-256"},true,["deriveKey"]
+  )
+
+  const pre=await crypto.subtle.generateKey(
+    {name:"ECDH",namedCurve:"P-256"},true,["deriveKey"]
+  )
+
+  const pub=await crypto.subtle.exportKey("jwk",keypair.publicKey)
+  const prekey=await crypto.subtle.exportKey("jwk",pre.publicKey)
+
+  await fetch(URL+"/rest/v1/users",{
+    method:"POST",
+    headers:{
+      apikey:KEY,
+      "Content-Type":"application/json",
+      "Prefer":"resolution=merge-duplicates"
+    },
+    body:JSON.stringify({
+      id: myId,
+      pubkey: pub,
+      prekey: prekey,
+      name: myName,
+      last_seen: Date.now()
+    })
   })
 }
 
 // SEND
 async function send(){
 
-  const text=document.getElementById("msg").value
-  if(!text || !currentUser) return
+  if(!currentUser) return
 
-  const payload={
-    id: crypto.randomUUID(),
-    recipient: currentUser,
-    sender: myName,
-    data: Array.from(new TextEncoder().encode(text)),
-    iv: []
+  const text=document.getElementById("msg").value
+  if(!text) return
+
+  const chatId=await getChatId(myName,currentUser)
+
+  const msg={
+    from: myName,
+    text,
+    time: Date.now()
   }
 
-  queue.push(payload)
+  render(msg,true)
 
-  render({from:myName,text},true)
+  await fetch(URL+"/rest/v1/messages",{
+    method:"POST",
+    headers:{
+      apikey:KEY,
+      "Content-Type":"application/json"
+    },
+    body:JSON.stringify({
+      recipient: chatId,
+      sender: myName,
+      data: JSON.stringify(msg),
+      iv: []
+    })
+  })
 
   document.getElementById("msg").value=""
 }
 
-// RETRY
-function retryLoop(){
+// LOAD HISTORY
+async function loadHistory(){
+
+  const chatId=await getChatId(myName,currentUser)
+
+  const r=await fetch(
+    URL+"/rest/v1/messages?recipient=eq."+chatId,
+    {headers:{apikey:KEY}}
+  )
+
+  const list=await r.json()
+
+  document.getElementById("chat").innerHTML=""
+
+  list.forEach(m=>{
+    const msg=JSON.parse(m.data)
+    render(msg, msg.from===myName)
+  })
+}
+
+// POLL
+function poll(){
 
   setInterval(async()=>{
 
-    if(queue.length===0) return
+    if(!currentUser) return
 
-    const m=queue[0]
+    const chatId=await getChatId(myName,currentUser)
 
-    log("SEND "+m.id)
+    const r=await fetch(
+      URL+"/rest/v1/messages?recipient=eq."+chatId,
+      {headers:{apikey:KEY}}
+    )
 
-    const res=await fetch(URL+"/rest/v1/messages",{
-      method:"POST",
-      headers:{
-        apikey:KEY,
-        "Content-Type":"application/json",
-        "Prefer":"return=minimal"
-      },
-      body:JSON.stringify(m)
-    })
+    const list=await r.json()
 
-    log("STATUS "+res.status)
+    for(const m of list){
 
-    if(res.ok) queue.shift()
+      if(seen.has(m.id)) continue
+      seen.add(m.id)
+
+      const msg=JSON.parse(m.data)
+
+      render(msg, msg.from===myName)
+    }
 
   },1500)
 }
