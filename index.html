@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V34</title>
+<title>Anon Signal V37 FIX</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -15,7 +15,6 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 .msg { margin:5px; padding:8px; border-radius:10px; }
 .me { background:#0af; margin-left:auto; }
 .peer { background:#444; }
-.status { font-size:10px; opacity:0.6; }
 #mode { margin:5px 0; }
 </style>
 </head>
@@ -26,20 +25,13 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 <div id="sidebar">
   <input id="name" placeholder="Your name">
   <button onclick="start()">Start</button>
-
   <div id="mode"></div>
-
-  <!-- 🔥 КНОПКА -->
-  <button id="goOnline" style="display:none;" onclick="goOnline()">
-    🚀 Запустить онлайн режим
-  </button>
-
+  <button onclick="goOnline()">🚀 Online</button>
   <div id="users"></div>
 </div>
 
 <div style="flex:1; display:flex; flex-direction:column;">
   <div id="chat"></div>
-
   <div style="display:flex;">
     <input id="msg">
     <button onclick="send()">➤</button>
@@ -49,56 +41,60 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 </div>
 
 <script>
-let myName, keypair, currentUser=null
-let sessions={}, ratchets={}
+
+// 🔥 ТВОЙ САЙТ
+const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
+
+// режим
+const ONLINE = location.protocol.startsWith("http")
+
+document.getElementById("mode").innerText =
+  ONLINE ? "🟢 ONLINE MODE" : "🟡 LOCAL MODE"
+
+// 🚀 АВТО ПЕРЕХОД
+if(!ONLINE){
+  setTimeout(()=>{
+    window.location.href = ONLINE_URL
+  },1000)
+}
+
+// кнопка
+function goOnline(){
+  window.location.href = ONLINE_URL
+}
+
+let myName, keypair, prekeyPair, currentUser=null
+let sessions={}
 let seen = new Set()
 let queue = []
 
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
 const KEY="sb_publishable_vd185mW1MiBYYxKZg1HwRg_pOuAWq72"
 
-// 👉 ВАЖНО: вставь сюда свой URL после загрузки
-const ONLINE_URL = "PASTE_YOUR_URL_HERE"
-
-// РЕЖИМ
-const ONLINE = location.protocol.startsWith("http")
-
-const modeEl = document.getElementById("mode")
-const btn = document.getElementById("goOnline")
-
-if(ONLINE){
-  modeEl.innerText = "🟢 ONLINE MODE"
-}else{
-  modeEl.innerText = "🟡 LOCAL MODE"
-  btn.style.display="block"
-}
-
-// 🔥 КНОПКА
-function goOnline(){
-
-  if(ONLINE_URL === "PASTE_YOUR_URL_HERE"){
-    alert("Сначала загрузи HTML в GitHub / Netlify и вставь ссылку")
-    return
-  }
-
-  window.location.href = ONLINE_URL
-}
-
 // HASH
+async function hash(data){
+  return new Uint8Array(await crypto.subtle.digest("SHA-256",data))
+}
+
 async function hashStr(str){
-  const buf=await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str))
-  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("")
+  return Array.from(await hash(new TextEncoder().encode(str)))
+    .map(b=>b.toString(16).padStart(2,"0")).join("")
 }
 
 async function getChatId(a,b){
   return await hashStr([a,b].sort().join("|"))
 }
 
+// START
 async function start(){
 
   myName=document.getElementById("name").value || "anon_"+Math.random().toString(36).slice(2)
 
   keypair=await crypto.subtle.generateKey(
+    {name:"ECDH",namedCurve:"P-256"},true,["deriveKey"]
+  )
+
+  prekeyPair=await crypto.subtle.generateKey(
     {name:"ECDH",namedCurve:"P-256"},true,["deriveKey"]
   )
 
@@ -117,7 +113,9 @@ async function start(){
 // PUBLISH
 async function publish(){
   const id=(await hashStr(myName)).slice(0,32)
+
   const pub=await crypto.subtle.exportKey("jwk",keypair.publicKey)
+  const pre=await crypto.subtle.exportKey("jwk",prekeyPair.publicKey)
 
   await fetch(URL+"/rest/v1/users",{
     method:"POST",
@@ -127,7 +125,7 @@ async function publish(){
       Prefer:"resolution=merge-duplicates"
     },
     body:JSON.stringify({
-      id, pubkey:pub, name:myName, last_seen:Date.now()
+      id, pubkey:pub, prekey:pre, name:myName, last_seen:Date.now()
     })
   })
 }
@@ -161,12 +159,6 @@ async function initSession(user){
 
   if(sessions[user]) return
 
-  if(!ONLINE){
-    sessions[user]=true
-    ratchets[user]=crypto.getRandomValues(new Uint8Array(32))
-    return
-  }
-
   const id=(await hashStr(user)).slice(0,32)
 
   const r=await fetch(URL+"/rest/v1/users?id=eq."+id,{headers:{apikey:KEY}})
@@ -174,23 +166,23 @@ async function initSession(user){
 
   if(!d[0]) return
 
-  const pub=await crypto.subtle.importKey(
-    "jwk", d[0].pubkey,
-    {name:"ECDH",namedCurve:"P-256"}, true, []
-  )
+  const pub=await crypto.subtle.importKey("jwk", d[0].pubkey,{name:"ECDH",namedCurve:"P-256"}, true, [])
+  const pre=await crypto.subtle.importKey("jwk", d[0].prekey,{name:"ECDH",namedCurve:"P-256"}, true, [])
 
-  const shared=await crypto.subtle.deriveBits(
-    {name:"ECDH",public:pub},
-    keypair.privateKey,
-    256
-  )
+  const s1=await crypto.subtle.deriveBits({name:"ECDH",public:pub},keypair.privateKey,256)
+  const s2=await crypto.subtle.deriveBits({name:"ECDH",public:pre},keypair.privateKey,256)
 
-  ratchets[user]=new Uint8Array(shared)
-  sessions[user]=true
+  const root = await hash(new Uint8Array([...new Uint8Array(s1),...new Uint8Array(s2)]))
+
+  sessions[user]={
+    rootKey: root,
+    sendChain: await hash(root),
+    recvChain: await hash(root)
+  }
 }
 
-async function nextKey(bytes){
-  return new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))
+async function nextChain(chain){
+  return await hash(chain)
 }
 
 async function importKey(bytes){
@@ -216,11 +208,11 @@ async function send(){
 
   await initSession(currentUser)
 
-  let keyBytes=ratchets[currentUser]
-  keyBytes=await nextKey(keyBytes)
-  ratchets[currentUser]=keyBytes
+  let s = sessions[currentUser]
 
-  const key=await importKey(keyBytes)
+  s.sendChain = await nextChain(s.sendChain)
+
+  const key=await importKey(s.sendChain)
 
   const iv=crypto.getRandomValues(new Uint8Array(12))
   const enc=new TextEncoder().encode(JSON.stringify(msg))
@@ -250,7 +242,8 @@ async function retryLoop(){
         method:"POST",
         headers:{
           apikey:KEY,
-          "Content-Type":"application/json"
+          "Content-Type":"application/json",
+          "Prefer":"return=minimal"
         },
         body:JSON.stringify(m)
       })
@@ -260,11 +253,13 @@ async function retryLoop(){
         console.log("DELIVERED")
       }
 
-    }catch(e){}
+    }catch(e){
+      console.log("ERROR", e)
+    }
   },2000)
 }
 
-// POLL
+// RECEIVE
 async function poll(){
   setInterval(async()=>{
     if(!currentUser) return
@@ -284,13 +279,13 @@ async function poll(){
 
       await initSession(currentUser)
 
+      let s = sessions[currentUser]
+
       try{
 
-        let keyBytes=ratchets[currentUser]
-        keyBytes=await nextKey(keyBytes)
-        ratchets[currentUser]=keyBytes
+        s.recvChain = await nextChain(s.recvChain)
 
-        const key=await importKey(keyBytes)
+        const key=await importKey(s.recvChain)
 
         const dec=await crypto.subtle.decrypt(
           {name:"AES-GCM",iv:new Uint8Array(m.iv)},
