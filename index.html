@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V38</title>
+<title>Anon Signal V38.1</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -45,13 +45,28 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
 const KEY="sb_publishable_vd185mW1MiBYYxKZg1HwRg_pOuAWq72"
 
+// 🚀 твой сайт
+const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
+
+// авто переход
+if(location.protocol === "file:" || location.protocol === "content:"){
+  setTimeout(()=> location.href = ONLINE_URL, 800)
+}
+
 const ONLINE = location.protocol.startsWith("http")
 
 document.getElementById("mode").innerText =
   ONLINE ? "🟢 ONLINE" : "🟡 LOCAL"
 
-let myName, keypair, currentUser=null
+let myName, myId, currentUser=null
 let queue=[]
+
+// HASH
+async function hashStr(str){
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str))
+  return Array.from(new Uint8Array(buf))
+    .map(b=>b.toString(16).padStart(2,"0")).join("")
+}
 
 function log(x){
   console.log(x)
@@ -61,18 +76,41 @@ function log(x){
 // START
 async function start(){
 
-  myName=document.getElementById("name").value || "anon_"+Math.random()
+  myName = document.getElementById("name").value || "anon"
 
-  keypair=await crypto.subtle.generateKey(
-    {name:"ECDH",namedCurve:"P-256"},true,["deriveKey"]
-  )
+  // 🔥 СТАБИЛЬНЫЙ ID
+  myId = (await hashStr(myName)).slice(0,32)
 
   await publish()
+
   loadUsers()
   setInterval(loadUsers,3000)
+
   retryLoop()
 
   alert("READY "+myName)
+}
+
+// ✅ FIXED PUBLISH
+async function publish(){
+
+  log("PUBLISH "+myName)
+
+  const res = await fetch(URL+"/rest/v1/users",{
+    method:"POST",
+    headers:{
+      apikey:KEY,
+      "Content-Type":"application/json",
+      "Prefer":"resolution=merge-duplicates"
+    },
+    body:JSON.stringify({
+      id: myId,
+      name: myName,
+      last_seen: Date.now()
+    })
+  })
+
+  log("PUBLISH STATUS "+res.status)
 }
 
 // USERS
@@ -86,7 +124,7 @@ async function loadUsers(){
 
   list.forEach((u,i)=>{
 
-    if(u.name===myName) return
+    if(u.id === myId) return
 
     const d=document.createElement("div")
     d.className="user"
@@ -99,31 +137,11 @@ async function loadUsers(){
 
     el.appendChild(d)
 
-    // 🔥 АВТОВЫБОР ПЕРВОГО
     if(!currentUser && i===0){
       currentUser=u.name
-      log("AUTO SELECT "+u.name)
+      log("AUTO "+u.name)
     }
 
-  })
-}
-
-// PUBLISH
-async function publish(){
-
-  const id=Math.random().toString(36)
-
-  await fetch(URL+"/rest/v1/users",{
-    method:"POST",
-    headers:{
-      apikey:KEY,
-      "Content-Type":"application/json"
-    },
-    body:JSON.stringify({
-      id,
-      name:myName,
-      last_seen:Date.now()
-    })
   })
 }
 
@@ -131,36 +149,14 @@ async function publish(){
 async function send(){
 
   const text=document.getElementById("msg").value
-  if(!text) return
+  if(!text || !currentUser) return
 
-  if(!currentUser){
-    alert("NO USER SELECTED")
-    return
-  }
-
-  log("SEND CLICK")
-
-  let payload = {
+  const payload={
     id: crypto.randomUUID(),
     recipient: currentUser,
     sender: myName,
-    data: [],
-    iv: []
-  }
-
-  try{
-
-    // 🔐 ПРОБУЕМ ШИФРОВАНИЕ
-    const enc=new TextEncoder().encode(text)
-    payload.data = Array.from(enc)
-
-    log("ENCRYPT OK")
-
-  }catch(e){
-
-    log("ENCRYPT FAIL → fallback")
-    payload.data = [0]
-
+    data: [1],
+    iv: [1]
   }
 
   queue.push(payload)
@@ -170,7 +166,7 @@ async function send(){
   document.getElementById("msg").value=""
 }
 
-// RETRY LOOP
+// RETRY
 function retryLoop(){
 
   setInterval(async()=>{
@@ -179,32 +175,25 @@ function retryLoop(){
 
     const m = queue[0]
 
-    log("TRY SEND "+m.id)
+    log("SEND "+m.id)
 
-    try{
+    const res=await fetch(URL+"/rest/v1/messages",{
+      method:"POST",
+      headers:{
+        apikey:KEY,
+        "Content-Type":"application/json",
+        "Prefer":"return=minimal"
+      },
+      body:JSON.stringify(m)
+    })
 
-      const res=await fetch(URL+"/rest/v1/messages",{
-        method:"POST",
-        headers:{
-          apikey:KEY,
-          "Content-Type":"application/json",
-          "Prefer":"return=representation"
-        },
-        body:JSON.stringify(m)
-      })
+    log("STATUS "+res.status)
 
-      log("STATUS "+res.status)
-
-      if(res.ok){
-        log("SUCCESS")
-        queue.shift()
-      }
-
-    }catch(e){
-      log("ERROR "+e)
+    if(res.ok){
+      queue.shift()
     }
 
-  },2000)
+  },1500)
 }
 
 // UI
