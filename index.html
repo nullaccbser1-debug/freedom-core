@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Anon Signal V34</title>
+
+<style>
+body { margin:0; font-family:system-ui; background:#111; color:white; }
+#app { display:flex; height:100vh; }
+#sidebar { width:240px; background:#1e1e1e; padding:10px; }
+input,button { width:100%; margin:5px 0; padding:8px; }
+.user { padding:8px; cursor:pointer; }
+.user:hover { background:#333; }
+#chat { flex:1; overflow:auto; padding:10px; }
+.msg { margin:5px; padding:8px; border-radius:10px; }
+.me { background:#0af; margin-left:auto; }
+.peer { background:#444; }
+.status { font-size:10px; opacity:0.6; }
+#mode { margin:5px 0; }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+<div id="sidebar">
+  <input id="name" placeholder="Your name">
+  <button onclick="start()">Start</button>
+
+  <div id="mode"></div>
+
+  <!-- 🔥 КНОПКА -->
+  <button id="goOnline" style="display:none;" onclick="goOnline()">
+    🚀 Запустить онлайн режим
+  </button>
+
+  <div id="users"></div>
+</div>
+
+<div style="flex:1; display:flex; flex-direction:column;">
+  <div id="chat"></div>
+
+  <div style="display:flex;">
+    <input id="msg">
+    <button onclick="send()">➤</button>
+  </div>
+</div>
+
+</div>
+
+<script>
+let myName, keypair, currentUser=null
+let sessions={}, ratchets={}
+let seen = new Set()
+let queue = []
+
+const URL="https://ubfytoriwbhglblxdzto.supabase.co"
+const KEY="sb_publishable_vd185mW1MiBYYxKZg1HwRg_pOuAWq72"
+
+// 👉 ВАЖНО: вставь сюда свой URL после загрузки
+const ONLINE_URL = "PASTE_YOUR_URL_HERE"
+
+// РЕЖИМ
+const ONLINE = location.protocol.startsWith("http")
+
+const modeEl = document.getElementById("mode")
+const btn = document.getElementById("goOnline")
+
+if(ONLINE){
+  modeEl.innerText = "🟢 ONLINE MODE"
+}else{
+  modeEl.innerText = "🟡 LOCAL MODE"
+  btn.style.display="block"
+}
+
+// 🔥 КНОПКА
+function goOnline(){
+
+  if(ONLINE_URL === "PASTE_YOUR_URL_HERE"){
+    alert("Сначала загрузи HTML в GitHub / Netlify и вставь ссылку")
+    return
+  }
+
+  window.location.href = ONLINE_URL
+}
+
+// HASH
+async function hashStr(str){
+  const buf=await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str))
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("")
+}
+
+async function getChatId(a,b){
+  return await hashStr([a,b].sort().join("|"))
+}
+
+async function start(){
+
+  myName=document.getElementById("name").value || "anon_"+Math.random().toString(36).slice(2)
+
+  keypair=await crypto.subtle.generateKey(
+    {name:"ECDH",namedCurve:"P-256"},true,["deriveKey"]
+  )
+
+  if(ONLINE){
+    await publish()
+    loadUsers()
+    setInterval(loadUsers,4000)
+    poll()
+  }
+
+  retryLoop()
+
+  alert("READY "+myName)
+}
+
+// PUBLISH
+async function publish(){
+  const id=(await hashStr(myName)).slice(0,32)
+  const pub=await crypto.subtle.exportKey("jwk",keypair.publicKey)
+
+  await fetch(URL+"/rest/v1/users",{
+    method:"POST",
+    headers:{
+      apikey:KEY,
+      "Content-Type":"application/json",
+      Prefer:"resolution=merge-duplicates"
+    },
+    body:JSON.stringify({
+      id, pubkey:pub, name:myName, last_seen:Date.now()
+    })
+  })
+}
+
+// USERS
+async function loadUsers(){
+  const r=await fetch(URL+"/rest/v1/users",{headers:{apikey:KEY}})
+  const list=await r.json()
+
+  const el=document.getElementById("users")
+  el.innerHTML=""
+
+  list.forEach(u=>{
+    if(u.name===myName) return
+
+    const d=document.createElement("div")
+    d.className="user"
+    d.innerText=u.name
+
+    d.onclick=()=>{
+      currentUser=u.name
+      loadHistory(u.name)
+    }
+
+    el.appendChild(d)
+  })
+}
+
+// SESSION
+async function initSession(user){
+
+  if(sessions[user]) return
+
+  if(!ONLINE){
+    sessions[user]=true
+    ratchets[user]=crypto.getRandomValues(new Uint8Array(32))
+    return
+  }
+
+  const id=(await hashStr(user)).slice(0,32)
+
+  const r=await fetch(URL+"/rest/v1/users?id=eq."+id,{headers:{apikey:KEY}})
+  const d=await r.json()
+
+  if(!d[0]) return
+
+  const pub=await crypto.subtle.importKey(
+    "jwk", d[0].pubkey,
+    {name:"ECDH",namedCurve:"P-256"}, true, []
+  )
+
+  const shared=await crypto.subtle.deriveBits(
+    {name:"ECDH",public:pub},
+    keypair.privateKey,
+    256
+  )
+
+  ratchets[user]=new Uint8Array(shared)
+  sessions[user]=true
+}
+
+async function nextKey(bytes){
+  return new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))
+}
+
+async function importKey(bytes){
+  return await crypto.subtle.importKey("raw",bytes,{name:"AES-GCM"},false,["encrypt","decrypt"])
+}
+
+// SEND
+async function send(){
+
+  if(!currentUser) return
+
+  const text=document.getElementById("msg").value
+  if(!text) return
+
+  const chatId=await getChatId(myName,currentUser)
+
+  const msg={from:myName,text,time:Date.now()}
+
+  render(msg,true)
+  save(chatId,msg)
+
+  if(!ONLINE) return
+
+  await initSession(currentUser)
+
+  let keyBytes=ratchets[currentUser]
+  keyBytes=await nextKey(keyBytes)
+  ratchets[currentUser]=keyBytes
+
+  const key=await importKey(keyBytes)
+
+  const iv=crypto.getRandomValues(new Uint8Array(12))
+  const enc=new TextEncoder().encode(JSON.stringify(msg))
+
+  const cipher=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,enc)
+
+  queue.push({
+    id: crypto.randomUUID(),
+    recipient: chatId,
+    sender: myName,
+    data: Array.from(new Uint8Array(cipher)),
+    iv: Array.from(iv)
+  })
+
+  document.getElementById("msg").value=""
+}
+
+// RETRY
+async function retryLoop(){
+  setInterval(async()=>{
+    if(!ONLINE || queue.length===0) return
+
+    const m = queue[0]
+
+    try{
+      const res=await fetch(URL+"/rest/v1/messages",{
+        method:"POST",
+        headers:{
+          apikey:KEY,
+          "Content-Type":"application/json"
+        },
+        body:JSON.stringify(m)
+      })
+
+      if(res.ok){
+        queue.shift()
+        console.log("DELIVERED")
+      }
+
+    }catch(e){}
+  },2000)
+}
+
+// POLL
+async function poll(){
+  setInterval(async()=>{
+    if(!currentUser) return
+
+    const chatId=await getChatId(myName,currentUser)
+
+    const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{
+      headers:{apikey:KEY}
+    })
+
+    const list=await r.json()
+
+    for(const m of list){
+
+      if(seen.has(m.id)) continue
+      seen.add(m.id)
+
+      await initSession(currentUser)
+
+      try{
+
+        let keyBytes=ratchets[currentUser]
+        keyBytes=await nextKey(keyBytes)
+        ratchets[currentUser]=keyBytes
+
+        const key=await importKey(keyBytes)
+
+        const dec=await crypto.subtle.decrypt(
+          {name:"AES-GCM",iv:new Uint8Array(m.iv)},
+          key,
+          new Uint8Array(m.data)
+        )
+
+        const msg=JSON.parse(new TextDecoder().decode(dec))
+
+        save(chatId,msg)
+        render(msg,false)
+
+      }catch(e){}
+    }
+
+  },1500)
+}
+
+// LOCAL
+function save(chat,msg){
+  const arr=JSON.parse(localStorage.getItem(chat)||"[]")
+  arr.push(msg)
+  localStorage.setItem(chat,JSON.stringify(arr))
+}
+
+function loadHistory(user){
+  getChatId(myName,user).then(chat=>{
+    const arr=JSON.parse(localStorage.getItem(chat)||"[]")
+    document.getElementById("chat").innerHTML=""
+    arr.forEach(m=>render(m,m.from===myName))
+  })
+}
+
+// UI
+function render(m,me){
+  const d=document.createElement("div")
+  d.className="msg "+(me?"me":"peer")
+  d.innerText=m.from+": "+m.text
+  document.getElementById("chat").appendChild(d)
+}
+</script>
+
+</body>
+</html>
