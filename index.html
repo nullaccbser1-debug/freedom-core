@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V43.1</title>
+<title>Anon Signal V44</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -56,6 +56,10 @@ input,button { width:100%; margin:5px 0; padding:8px; }
   font-size:13px;
 }
 
+.reactionOwn {
+  font-weight:bold;
+}
+
 .reactBtn {
   position:absolute;
   right:6px;
@@ -91,6 +95,15 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 </style>
 </head>
 <body>
+
+<script>
+// ===== REDIRECT =====
+(function(){
+  if(location.protocol==="file:"||location.protocol==="content:"){
+    location.replace("https://nullaccbser1-debug.github.io/freedom-core/");
+  }
+})();
+</script>
 
 <div id="app">
 
@@ -213,6 +226,7 @@ async function send(){
     msg.replyTo = trimReplyChain(forwardMsg.replyTo)
   }
 
+  seen.add(msg.id)
   render(msg,true)
 
   await fetch(URL+"/rest/v1/messages",{
@@ -263,8 +277,15 @@ async function sendReaction(emoji){
 
 function applyReaction(r){
   if(!reactionsMap[r.target]) reactionsMap[r.target]={}
-  if(!reactionsMap[r.target][r.emoji]) reactionsMap[r.target][r.emoji]=0
-  reactionsMap[r.target][r.emoji]++
+  if(!reactionsMap[r.target][r.emoji]) reactionsMap[r.target][r.emoji]=new Set()
+
+  const set=reactionsMap[r.target][r.emoji]
+
+  if(set.has(r.from)){
+    set.delete(r.from) // toggle off
+  } else {
+    set.add(r.from)
+  }
 }
 
 function updateReactionsUI(){
@@ -274,8 +295,11 @@ function updateReactionsUI(){
     if(!r) return
 
     let text=""
+
     for(let e in r){
-      text+=e+" "+r[e]+" "
+      const users=r[e]
+      const own=users.has(myName)
+      text+= `<span class="${own?'reactionOwn':''}">${e} ${users.size}</span> `
     }
 
     let box=el.querySelector(".reactions")
@@ -285,7 +309,7 @@ function updateReactionsUI(){
       el.appendChild(box)
     }
 
-    box.innerText=text
+    box.innerHTML=text
   })
 }
 
@@ -293,6 +317,8 @@ function updateReactionsUI(){
 
 async function loadHistory(){
   reactionsMap={}
+  seen=new Set()
+
   const chatId=await getChatId(myName,currentUser)
 
   const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
@@ -306,6 +332,7 @@ async function loadHistory(){
     if(msg.type==="reaction"){
       applyReaction(msg)
     } else {
+      seen.add(msg.id)
       render(msg,msg.from===myName)
     }
   })
@@ -361,6 +388,8 @@ function showPicker(id){
 
 function render(m,me){
 
+  if(seen.has(m.id) && !me) return
+
   const d=document.createElement("div")
   d.className="msg "+(me?"me":"peer")
   d.dataset.id=m.id
@@ -368,7 +397,6 @@ function render(m,me){
   d.onclick=()=>setReply(m)
   d.oncontextmenu=(e)=>{e.preventDefault();setForward(m)}
 
-  // кнопка реакции
   const btn=document.createElement("div")
   btn.className="reactBtn"
   btn.innerText="🙂"
