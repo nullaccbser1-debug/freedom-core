@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V44.1</title>
+<title>Anon Signal V43.1</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -53,7 +53,16 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 
 .reactions {
   margin-top:4px;
+  font-size:13px;
+}
+
+.reactBtn {
+  position:absolute;
+  right:6px;
+  top:6px;
   font-size:14px;
+  opacity:0.6;
+  cursor:pointer;
 }
 
 #emojiPicker {
@@ -72,6 +81,13 @@ input,button { width:100%; margin:5px 0; padding:8px; }
   margin:5px;
   cursor:pointer;
 }
+
+#replyPreview,#forwardPreview {
+  background:#222;
+  padding:6px;
+  font-size:12px;
+  display:none;
+}
 </style>
 </head>
 <body>
@@ -86,6 +102,9 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 
 <div style="flex:1; display:flex; flex-direction:column;">
   <div id="chat"></div>
+
+  <div id="replyPreview"></div>
+  <div id="forwardPreview"></div>
 
   <div style="display:flex;">
     <input id="msg">
@@ -106,6 +125,7 @@ let myName,myId,currentUser=null
 let seen=new Set()
 let replyTo=null
 let forwardMsg=null
+
 let reactionsMap={}
 let reactionTarget=null
 
@@ -131,10 +151,10 @@ function formatTime(ts){
 function trimReplyChain(r, depth=0){
   if(!r || depth>2) return null
   return {
-    id:r.id,
-    from:r.from,
-    text:r.text,
-    replyTo:trimReplyChain(r.replyTo, depth+1)
+    id: r.id,
+    from: r.from,
+    text: r.text,
+    replyTo: trimReplyChain(r.replyTo, depth+1)
   }
 }
 
@@ -189,8 +209,8 @@ async function send(){
   }
 
   if(forwardMsg){
-    msg.text=forwardMsg.text
-    msg.replyTo=trimReplyChain(forwardMsg.replyTo)
+    msg.text = forwardMsg.text
+    msg.replyTo = trimReplyChain(forwardMsg.replyTo)
   }
 
   render(msg,true)
@@ -209,6 +229,7 @@ async function send(){
   document.getElementById("msg").value=""
   replyTo=null
   forwardMsg=null
+  hidePreviews()
 }
 
 // ===== REACTIONS =====
@@ -240,33 +261,6 @@ async function sendReaction(emoji){
   document.getElementById("emojiPicker").style.display="none"
 }
 
-// ===== POLL =====
-
-function poll(){
-  setInterval(async()=>{
-    if(!currentUser) return
-
-    const chatId=await getChatId(myName,currentUser)
-
-    const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
-    const list=await r.json()
-
-    for(const m of list){
-      if(seen.has(m.id)) continue
-      seen.add(m.id)
-
-      const msg=JSON.parse(m.data)
-
-      if(msg.type==="reaction"){
-        applyReaction(msg)
-        updateReactionsUI()
-      } else {
-        render(msg,msg.from===myName)
-      }
-    }
-  },1500)
-}
-
 function applyReaction(r){
   if(!reactionsMap[r.target]) reactionsMap[r.target]={}
   if(!reactionsMap[r.target][r.emoji]) reactionsMap[r.target][r.emoji]=0
@@ -295,6 +289,57 @@ function updateReactionsUI(){
   })
 }
 
+// ===== HISTORY =====
+
+async function loadHistory(){
+  reactionsMap={}
+  const chatId=await getChatId(myName,currentUser)
+
+  const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
+  const list=await r.json()
+
+  document.getElementById("chat").innerHTML=""
+
+  list.forEach(m=>{
+    const msg=JSON.parse(m.data)
+
+    if(msg.type==="reaction"){
+      applyReaction(msg)
+    } else {
+      render(msg,msg.from===myName)
+    }
+  })
+
+  updateReactionsUI()
+}
+
+// ===== POLL =====
+
+function poll(){
+  setInterval(async()=>{
+    if(!currentUser) return
+
+    const chatId=await getChatId(myName,currentUser)
+
+    const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
+    const list=await r.json()
+
+    for(const m of list){
+      if(seen.has(m.id)) continue
+      seen.add(m.id)
+
+      const msg=JSON.parse(m.data)
+
+      if(msg.type==="reaction"){
+        applyReaction(msg)
+        updateReactionsUI()
+      } else {
+        render(msg,msg.from===myName)
+      }
+    }
+  },1500)
+}
+
 // ===== EMOJI PICKER =====
 
 function showPicker(id){
@@ -312,21 +357,6 @@ function showPicker(id){
   picker.style.display="block"
 }
 
-// ===== RENDER REPLY TREE =====
-
-function renderReplyChain(container, r, level=0){
-  if(!r) return
-
-  const div=document.createElement("div")
-  div.className="replyBox"
-  div.style.marginLeft=(level*8)+"px"
-  div.innerText=r.from+": "+r.text
-
-  container.appendChild(div)
-
-  renderReplyChain(container, r.replyTo, level+1)
-}
-
 // ===== RENDER =====
 
 function render(m,me){
@@ -335,18 +365,15 @@ function render(m,me){
   d.className="msg "+(me?"me":"peer")
   d.dataset.id=m.id
 
-  d.onclick=()=>replyTo=m
+  d.onclick=()=>setReply(m)
+  d.oncontextmenu=(e)=>{e.preventDefault();setForward(m)}
 
-  // ПКМ = forward (возвращено!)
-  d.oncontextmenu=(e)=>{
-    e.preventDefault()
-    forwardMsg=m
-  }
-
-  // ДВОЙНОЙ КЛИК = реакции
-  d.ondblclick=()=>{
-    showPicker(m.id)
-  }
+  // кнопка реакции
+  const btn=document.createElement("div")
+  btn.className="reactBtn"
+  btn.innerText="🙂"
+  btn.onclick=(e)=>{e.stopPropagation();showPicker(m.id)}
+  d.appendChild(btn)
 
   if(m.forwardFrom){
     const f=document.createElement("div")
@@ -356,7 +383,7 @@ function render(m,me){
   }
 
   if(m.replyTo){
-    renderReplyChain(d,m.replyTo)
+    renderReplyChain(d, m.replyTo)
   }
 
   const text=document.createElement("div")
@@ -370,6 +397,42 @@ function render(m,me){
   d.appendChild(time)
 
   document.getElementById("chat").appendChild(d)
+}
+
+// ===== ACTIONS =====
+
+function setReply(m){
+  replyTo=m
+  showPreview("replyPreview","Reply: "+m.from+": "+m.text)
+}
+
+function setForward(m){
+  forwardMsg=m
+  showPreview("forwardPreview","Forward: "+m.from+": "+m.text)
+}
+
+function showPreview(id,text){
+  const el=document.getElementById(id)
+  el.style.display="block"
+  el.innerText=text
+}
+
+function hidePreviews(){
+  document.getElementById("replyPreview").style.display="none"
+  document.getElementById("forwardPreview").style.display="none"
+}
+
+function renderReplyChain(container, r, level=0){
+  if(!r) return
+
+  const div=document.createElement("div")
+  div.className="replyBox"
+  div.style.marginLeft = (level*8)+"px"
+  div.innerText=r.from+": "+r.text
+
+  container.appendChild(div)
+
+  renderReplyChain(container, r.replyTo, level+1)
 }
 
 </script>
