@@ -2,20 +2,69 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V39.1</title>
+<title>Anon Signal V40</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
+
 #app { display:flex; height:100vh; }
-#sidebar { width:240px; background:#1e1e1e; padding:10px; }
-input,button { width:100%; margin:5px 0; padding:8px; }
-.user { padding:8px; cursor:pointer; }
+
+#sidebar {
+  width:240px;
+  background:#1e1e1e;
+  padding:10px;
+}
+
+input,button {
+  width:100%;
+  margin:5px 0;
+  padding:8px;
+}
+
+.user {
+  padding:8px;
+  cursor:pointer;
+}
 .user:hover { background:#333; }
-#chat { flex:1; overflow:auto; padding:10px; }
-.msg { margin:5px; padding:8px; border-radius:10px; }
-.me { background:#0af; margin-left:auto; }
-.peer { background:#444; }
-#mode { font-size:12px; opacity:0.7; margin-bottom:5px; }
+
+#chat {
+  flex:1;
+  overflow:auto;
+  padding:10px;
+  display:flex;
+  flex-direction:column;
+}
+
+.msg {
+  max-width:70%;
+  margin:6px;
+  padding:10px;
+  border-radius:12px;
+  position:relative;
+  word-wrap:break-word;
+}
+
+.me {
+  background:#0af;
+  margin-left:auto;
+}
+
+.peer {
+  background:#333;
+}
+
+.time {
+  font-size:10px;
+  opacity:0.6;
+  margin-top:4px;
+  text-align:right;
+}
+
+#mode {
+  font-size:12px;
+  opacity:0.7;
+}
+
 </style>
 </head>
 <body>
@@ -41,35 +90,29 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 
 <script>
 
-// 🔥 ТВОЙ САЙТ
+// ===== REDIRECT (V39.1) =====
 const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
-
-// 🔥 ОПРЕДЕЛЕНИЕ РЕЖИМА
 const protocol = location.protocol
 
 const isLocal =
   protocol === "file:" ||
   protocol === "content:"
 
-// 🔥 АВТО-ПЕРЕХОД (АККУРАТНЫЙ)
 if(isLocal){
-  console.log("Redirecting to online mode...")
-  setTimeout(()=>{
-    location.href = ONLINE_URL
-  }, 700)
+  setTimeout(()=> location.href = ONLINE_URL, 700)
 }
 
-// UI статус
 document.getElementById("mode").innerText =
   isLocal ? "🟡 LOCAL → redirecting..." : "🟢 ONLINE"
 
-// ======= НИЖЕ ВСЁ КАК В V39 (НЕ ТРОГАЕМ) =======
-
+// ===== CONFIG =====
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
 const KEY="sb_publishable_vd185mW1MiBYYxKZg1HwRg_pOuAWq72"
 
 let myName, myId, currentUser=null
 let seen = new Set()
+
+// ===== UTILS =====
 
 async function hashStr(str){
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str))
@@ -80,6 +123,13 @@ async function hashStr(str){
 async function getChatId(a,b){
   return (await hashStr([a,b].sort().join("|"))).slice(0,32)
 }
+
+function formatTime(ts){
+  const d = new Date(ts)
+  return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+}
+
+// ===== START =====
 
 async function start(){
 
@@ -95,6 +145,8 @@ async function start(){
 
   alert("READY "+myName)
 }
+
+// ===== USERS =====
 
 async function loadUsers(){
 
@@ -151,6 +203,8 @@ async function publish(){
   })
 }
 
+// ===== SEND =====
+
 async function send(){
 
   if(!currentUser) return
@@ -160,10 +214,15 @@ async function send(){
 
   const chatId=await getChatId(myName,currentUser)
 
+  // 🔥 НОВЫЙ ФОРМАТ (НО СОВМЕСТИМЫЙ)
   const msg={
+    id: crypto.randomUUID(),
     from: myName,
     text,
-    time: Date.now()
+    time: Date.now(),
+    type: "text",
+    replyTo: null,
+    reactions: {}
   }
 
   render(msg,true)
@@ -185,6 +244,8 @@ async function send(){
   document.getElementById("msg").value=""
 }
 
+// ===== HISTORY =====
+
 async function loadHistory(){
 
   const chatId=await getChatId(myName,currentUser)
@@ -199,10 +260,47 @@ async function loadHistory(){
   document.getElementById("chat").innerHTML=""
 
   list.forEach(m=>{
-    const msg=JSON.parse(m.data)
+    const msg=parseMsg(m.data)
     render(msg, msg.from===myName)
   })
 }
+
+// ===== PARSER (ВАЖНО) =====
+
+function parseMsg(data){
+
+  try{
+    const m = JSON.parse(data)
+
+    // старый формат
+    if(!m.type){
+      return {
+        id: crypto.randomUUID(),
+        from: m.from,
+        text: m.text,
+        time: m.time || Date.now(),
+        type: "text",
+        replyTo: null,
+        reactions: {}
+      }
+    }
+
+    return m
+
+  }catch{
+    return {
+      id: crypto.randomUUID(),
+      from: "unknown",
+      text: "corrupt",
+      time: Date.now(),
+      type:"text",
+      replyTo:null,
+      reactions:{}
+    }
+  }
+}
+
+// ===== POLL =====
 
 function poll(){
 
@@ -224,7 +322,7 @@ function poll(){
       if(seen.has(m.id)) continue
       seen.add(m.id)
 
-      const msg=JSON.parse(m.data)
+      const msg=parseMsg(m.data)
 
       render(msg, msg.from===myName)
     }
@@ -232,10 +330,23 @@ function poll(){
   },1500)
 }
 
+// ===== RENDER =====
+
 function render(m,me){
+
   const d=document.createElement("div")
   d.className="msg "+(me?"me":"peer")
-  d.innerText=m.from+": "+m.text
+
+  const text=document.createElement("div")
+  text.innerText=m.from+": "+m.text
+
+  const time=document.createElement("div")
+  time.className="time"
+  time.innerText=formatTime(m.time)
+
+  d.appendChild(text)
+  d.appendChild(time)
+
   document.getElementById("chat").appendChild(d)
 }
 
