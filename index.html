@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V44</title>
+<title>Anon Signal V44.1</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -56,11 +56,6 @@ input,button { width:100%; margin:5px 0; padding:8px; }
   font-size:14px;
 }
 
-.reactionBtn {
-  margin-right:6px;
-  cursor:pointer;
-}
-
 #emojiPicker {
   position:fixed;
   bottom:60px;
@@ -77,13 +72,6 @@ input,button { width:100%; margin:5px 0; padding:8px; }
   margin:5px;
   cursor:pointer;
 }
-
-#replyPreview,#forwardPreview {
-  background:#222;
-  padding:6px;
-  font-size:12px;
-  display:none;
-}
 </style>
 </head>
 <body>
@@ -98,9 +86,6 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 
 <div style="flex:1; display:flex; flex-direction:column;">
   <div id="chat"></div>
-
-  <div id="replyPreview"></div>
-  <div id="forwardPreview"></div>
 
   <div style="display:flex;">
     <input id="msg">
@@ -121,7 +106,7 @@ let myName,myId,currentUser=null
 let seen=new Set()
 let replyTo=null
 let forwardMsg=null
-let reactionsMap={} // msgId -> {emoji:count}
+let reactionsMap={}
 let reactionTarget=null
 
 const EMOJIS=["👍","🔥","😂","❤️","😮","😢"]
@@ -139,6 +124,18 @@ async function getChatId(a,b){
 
 function formatTime(ts){
   return new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
+}
+
+// ===== DEPTH LIMIT =====
+
+function trimReplyChain(r, depth=0){
+  if(!r || depth>2) return null
+  return {
+    id:r.id,
+    from:r.from,
+    text:r.text,
+    replyTo:trimReplyChain(r.replyTo, depth+1)
+  }
 }
 
 // ===== START =====
@@ -187,8 +184,13 @@ async function send(){
     text,
     time:Date.now(),
     type:"text",
-    replyTo: replyTo,
+    replyTo: replyTo ? trimReplyChain(replyTo) : null,
     forwardFrom: forwardMsg ? forwardMsg.from : null
+  }
+
+  if(forwardMsg){
+    msg.text=forwardMsg.text
+    msg.replyTo=trimReplyChain(forwardMsg.replyTo)
   }
 
   render(msg,true)
@@ -209,10 +211,9 @@ async function send(){
   forwardMsg=null
 }
 
-// ===== REACTION SEND =====
+// ===== REACTIONS =====
 
 async function sendReaction(emoji){
-
   if(!reactionTarget) return
 
   const chatId=await getChatId(myName,currentUser)
@@ -237,28 +238,6 @@ async function sendReaction(emoji){
   })
 
   document.getElementById("emojiPicker").style.display="none"
-}
-
-// ===== HISTORY =====
-
-async function loadHistory(){
-  reactionsMap={}
-  const chatId=await getChatId(myName,currentUser)
-
-  const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
-  const list=await r.json()
-
-  document.getElementById("chat").innerHTML=""
-
-  list.forEach(m=>{
-    const msg=JSON.parse(m.data)
-
-    if(msg.type==="reaction"){
-      applyReaction(msg)
-    } else {
-      render(msg,msg.from===myName)
-    }
-  })
 }
 
 // ===== POLL =====
@@ -287,8 +266,6 @@ function poll(){
     }
   },1500)
 }
-
-// ===== REACTIONS =====
 
 function applyReaction(r){
   if(!reactionsMap[r.target]) reactionsMap[r.target]={}
@@ -335,6 +312,21 @@ function showPicker(id){
   picker.style.display="block"
 }
 
+// ===== RENDER REPLY TREE =====
+
+function renderReplyChain(container, r, level=0){
+  if(!r) return
+
+  const div=document.createElement("div")
+  div.className="replyBox"
+  div.style.marginLeft=(level*8)+"px"
+  div.innerText=r.from+": "+r.text
+
+  container.appendChild(div)
+
+  renderReplyChain(container, r.replyTo, level+1)
+}
+
 // ===== RENDER =====
 
 function render(m,me){
@@ -344,8 +336,15 @@ function render(m,me){
   d.dataset.id=m.id
 
   d.onclick=()=>replyTo=m
+
+  // ПКМ = forward (возвращено!)
   d.oncontextmenu=(e)=>{
     e.preventDefault()
+    forwardMsg=m
+  }
+
+  // ДВОЙНОЙ КЛИК = реакции
+  d.ondblclick=()=>{
     showPicker(m.id)
   }
 
@@ -357,10 +356,7 @@ function render(m,me){
   }
 
   if(m.replyTo){
-    const r=document.createElement("div")
-    r.className="replyBox"
-    r.innerText=m.replyTo.from+": "+m.replyTo.text
-    d.appendChild(r)
+    renderReplyChain(d,m.replyTo)
   }
 
   const text=document.createElement("div")
