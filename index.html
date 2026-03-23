@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V41</title>
+<title>Anon Signal V42</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -40,8 +40,6 @@ input,button {
   margin:6px;
   padding:10px;
   border-radius:12px;
-  position:relative;
-  word-wrap:break-word;
   cursor:pointer;
 }
 
@@ -51,19 +49,23 @@ input,button {
 .time {
   font-size:10px;
   opacity:0.6;
-  margin-top:4px;
   text-align:right;
 }
 
 .replyBox {
   border-left:3px solid #0af;
   padding-left:6px;
-  margin-bottom:5px;
   font-size:12px;
   opacity:0.8;
 }
 
-#replyPreview {
+.forwardBox {
+  font-size:11px;
+  opacity:0.6;
+  margin-bottom:4px;
+}
+
+#replyPreview, #forwardPreview {
   background:#222;
   padding:6px;
   font-size:12px;
@@ -91,6 +93,7 @@ input,button {
   <div id="chat"></div>
 
   <div id="replyPreview"></div>
+  <div id="forwardPreview"></div>
 
   <div style="display:flex;">
     <input id="msg">
@@ -104,33 +107,27 @@ input,button {
 
 // ===== REDIRECT =====
 const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
-const protocol = location.protocol
-
-const isLocal =
-  protocol === "file:" ||
-  protocol === "content:"
-
-if(isLocal){
-  setTimeout(()=> location.href = ONLINE_URL, 700)
+if(location.protocol==="file:"||location.protocol==="content:"){
+  setTimeout(()=>location.href=ONLINE_URL,700)
 }
-
 document.getElementById("mode").innerText =
-  isLocal ? "🟡 LOCAL → redirecting..." : "🟢 ONLINE"
+  location.protocol==="http:"||location.protocol==="https:"
+  ? "🟢 ONLINE" : "🟡 LOCAL"
 
 // ===== CONFIG =====
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
 const KEY="sb_publishable_vd185mW1MiBYYxKZg1HwRg_pOuAWq72"
 
-let myName, myId, currentUser=null
-let seen = new Set()
-let replyTo = null
+let myName,myId,currentUser=null
+let seen=new Set()
+let replyTo=null
+let forwardMsg=null
 
 // ===== UTILS =====
 
 async function hashStr(str){
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str))
-  return Array.from(new Uint8Array(buf))
-    .map(b=>b.toString(16).padStart(2,"0")).join("")
+  const buf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(str))
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("")
 }
 
 async function getChatId(a,b){
@@ -138,22 +135,18 @@ async function getChatId(a,b){
 }
 
 function formatTime(ts){
-  const d = new Date(ts)
-  return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+  return new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
 }
 
 // ===== START =====
 
 async function start(){
-
-  myName=document.getElementById("name").value || "anon"
+  myName=document.getElementById("name").value||"anon"
   myId=(await hashStr(myName)).slice(0,32)
 
   await publish()
-
   loadUsers()
   setInterval(loadUsers,3000)
-
   poll()
 
   alert("READY "+myName)
@@ -162,7 +155,6 @@ async function start(){
 // ===== USERS =====
 
 async function loadUsers(){
-
   const r=await fetch(URL+"/rest/v1/users",{headers:{apikey:KEY}})
   const list=await r.json()
 
@@ -170,31 +162,20 @@ async function loadUsers(){
   el.innerHTML=""
 
   list.forEach(u=>{
-
     if(u.id===myId) return
 
     const d=document.createElement("div")
     d.className="user"
     d.innerText=u.name
-
-    d.onclick=()=>{
-      currentUser=u.name
-      loadHistory()
-    }
-
+    d.onclick=()=>{currentUser=u.name;loadHistory()}
     el.appendChild(d)
   })
 }
 
 async function publish(){
 
-  const keypair=await crypto.subtle.generateKey(
-    {name:"ECDH",namedCurve:"P-256"},true,["deriveKey"]
-  )
-
-  const pre=await crypto.subtle.generateKey(
-    {name:"ECDH",namedCurve:"P-256"},true,["deriveKey"]
-  )
+  const keypair=await crypto.subtle.generateKey({name:"ECDH",namedCurve:"P-256"},true,["deriveKey"])
+  const pre=await crypto.subtle.generateKey({name:"ECDH",namedCurve:"P-256"},true,["deriveKey"])
 
   const pub=await crypto.subtle.exportKey("jwk",keypair.publicKey)
   const prekey=await crypto.subtle.exportKey("jwk",pre.publicKey)
@@ -207,11 +188,11 @@ async function publish(){
       "Prefer":"resolution=merge-duplicates"
     },
     body:JSON.stringify({
-      id: myId,
-      pubkey: pub,
-      prekey: prekey,
-      name: myName,
-      last_seen: Date.now()
+      id:myId,
+      pubkey:pub,
+      prekey:prekey,
+      name:myName,
+      last_seen:Date.now()
     })
   })
 }
@@ -223,142 +204,119 @@ async function send(){
   if(!currentUser) return
 
   const text=document.getElementById("msg").value
-  if(!text) return
 
   const chatId=await getChatId(myName,currentUser)
 
-  const msg={
-    id: crypto.randomUUID(),
-    from: myName,
-    text,
-    time: Date.now(),
-    type: "text",
-    replyTo: replyTo,
-    reactions: {}
+  let msg={
+    id:crypto.randomUUID(),
+    from:myName,
+    text:text,
+    time:Date.now(),
+    type:"text",
+    replyTo:replyTo,
+    forwardFrom: forwardMsg ? forwardMsg.from : null,
+    reactions:{}
+  }
+
+  if(forwardMsg){
+    msg.text = forwardMsg.text
   }
 
   render(msg,true)
 
   await fetch(URL+"/rest/v1/messages",{
     method:"POST",
-    headers:{
-      apikey:KEY,
-      "Content-Type":"application/json"
-    },
+    headers:{apikey:KEY,"Content-Type":"application/json"},
     body:JSON.stringify({
-      recipient: chatId,
-      sender: myName,
-      data: JSON.stringify(msg),
-      iv: []
+      recipient:chatId,
+      sender:myName,
+      data:JSON.stringify(msg),
+      iv:[]
     })
   })
 
   document.getElementById("msg").value=""
   clearReply()
+  clearForward()
 }
 
 // ===== HISTORY =====
 
 async function loadHistory(){
-
   const chatId=await getChatId(myName,currentUser)
 
-  const r=await fetch(
-    URL+"/rest/v1/messages?recipient=eq."+chatId,
-    {headers:{apikey:KEY}}
-  )
-
+  const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
   const list=await r.json()
 
   document.getElementById("chat").innerHTML=""
 
   list.forEach(m=>{
     const msg=parseMsg(m.data)
-    render(msg, msg.from===myName)
+    render(msg,msg.from===myName)
   })
 }
 
 // ===== PARSER =====
 
 function parseMsg(data){
-
   try{
-    const m = JSON.parse(data)
-
+    const m=JSON.parse(data)
     if(!m.type){
-      return {
-        id: crypto.randomUUID(),
-        from: m.from,
-        text: m.text,
-        time: m.time || Date.now(),
-        type: "text",
-        replyTo: null,
-        reactions: {}
-      }
+      return {id:crypto.randomUUID(),from:m.from,text:m.text,time:m.time||Date.now(),type:"text",replyTo:null,reactions:{}}
     }
-
     return m
-
   }catch{
-    return {
-      id: crypto.randomUUID(),
-      from: "unknown",
-      text: "corrupt",
-      time: Date.now(),
-      type:"text",
-      replyTo:null,
-      reactions:{}
-    }
+    return {id:crypto.randomUUID(),from:"?",text:"corrupt",time:Date.now(),type:"text",replyTo:null,reactions:{}}
   }
 }
 
 // ===== POLL =====
 
 function poll(){
-
   setInterval(async()=>{
-
     if(!currentUser) return
 
     const chatId=await getChatId(myName,currentUser)
 
-    const r=await fetch(
-      URL+"/rest/v1/messages?recipient=eq."+chatId,
-      {headers:{apikey:KEY}}
-    )
-
+    const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
     const list=await r.json()
 
     for(const m of list){
-
       if(seen.has(m.id)) continue
       seen.add(m.id)
 
       const msg=parseMsg(m.data)
-
-      render(msg, msg.from===myName)
+      render(msg,msg.from===myName)
     }
-
   },1500)
 }
 
 // ===== REPLY =====
 
 function setReply(m){
-  replyTo = {
-    text: m.text,
-    from: m.from
-  }
-
-  const el = document.getElementById("replyPreview")
-  el.style.display = "block"
-  el.innerText = "Replying to " + m.from + ": " + m.text
+  replyTo={text:m.text,from:m.from}
+  const el=document.getElementById("replyPreview")
+  el.style.display="block"
+  el.innerText="Reply: "+m.from+": "+m.text
 }
 
 function clearReply(){
-  replyTo = null
-  const el = document.getElementById("replyPreview")
-  el.style.display = "none"
+  replyTo=null
+  document.getElementById("replyPreview").style.display="none"
+}
+
+// ===== FORWARD =====
+
+function setForward(m){
+  forwardMsg=m
+  const el=document.getElementById("forwardPreview")
+  el.style.display="block"
+  el.innerText="Forwarding: "+m.from+": "+m.text
+}
+
+function clearForward(){
+  forwardMsg=null
+  document.getElementById("forwardPreview").style.display="none"
 }
 
 // ===== RENDER =====
@@ -368,13 +326,23 @@ function render(m,me){
   const d=document.createElement("div")
   d.className="msg "+(me?"me":"peer")
 
-  d.onclick = ()=> setReply(m)
+  d.onclick=()=>setReply(m)
+  d.oncontextmenu=(e)=>{
+    e.preventDefault()
+    setForward(m)
+  }
 
-  // reply preview
+  if(m.forwardFrom){
+    const f=document.createElement("div")
+    f.className="forwardBox"
+    f.innerText="Forwarded from "+m.forwardFrom
+    d.appendChild(f)
+  }
+
   if(m.replyTo){
     const r=document.createElement("div")
     r.className="replyBox"
-    r.innerText = m.replyTo.from + ": " + m.replyTo.text
+    r.innerText=m.replyTo.from+": "+m.replyTo.text
     d.appendChild(r)
   }
 
