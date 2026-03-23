@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V43</title>
+<title>Anon Signal V44</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -29,6 +29,7 @@ input,button { width:100%; margin:5px 0; padding:8px; }
   padding:10px;
   border-radius:12px;
   cursor:pointer;
+  position:relative;
 }
 
 .me { background:#0af; margin-left:auto; }
@@ -48,6 +49,33 @@ input,button { width:100%; margin:5px 0; padding:8px; }
   font-size:11px;
   opacity:0.6;
   margin-bottom:4px;
+}
+
+.reactions {
+  margin-top:4px;
+  font-size:14px;
+}
+
+.reactionBtn {
+  margin-right:6px;
+  cursor:pointer;
+}
+
+#emojiPicker {
+  position:fixed;
+  bottom:60px;
+  left:50%;
+  transform:translateX(-50%);
+  background:#222;
+  padding:10px;
+  border-radius:10px;
+  display:none;
+}
+
+#emojiPicker span {
+  font-size:20px;
+  margin:5px;
+  cursor:pointer;
 }
 
 #replyPreview,#forwardPreview {
@@ -82,6 +110,8 @@ input,button { width:100%; margin:5px 0; padding:8px; }
 
 </div>
 
+<div id="emojiPicker"></div>
+
 <script>
 
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
@@ -91,6 +121,10 @@ let myName,myId,currentUser=null
 let seen=new Set()
 let replyTo=null
 let forwardMsg=null
+let reactionsMap={} // msgId -> {emoji:count}
+let reactionTarget=null
+
+const EMOJIS=["👍","🔥","😂","❤️","😮","😢"]
 
 // ===== UTILS =====
 
@@ -105,18 +139,6 @@ async function getChatId(a,b){
 
 function formatTime(ts){
   return new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
-}
-
-// ===== DEPTH LIMIT =====
-
-function trimReplyChain(r, depth=0){
-  if(!r || depth>2) return null
-  return {
-    id: r.id,
-    from: r.from,
-    text: r.text,
-    replyTo: trimReplyChain(r.replyTo, depth+1)
-  }
 }
 
 // ===== START =====
@@ -165,14 +187,8 @@ async function send(){
     text,
     time:Date.now(),
     type:"text",
-    replyTo: replyTo ? trimReplyChain(replyTo) : null,
-    forwardFrom: forwardMsg ? forwardMsg.from : null,
-    reactions:{}
-  }
-
-  if(forwardMsg){
-    msg.text = forwardMsg.text
-    msg.replyTo = trimReplyChain(forwardMsg.replyTo)
+    replyTo: replyTo,
+    forwardFrom: forwardMsg ? forwardMsg.from : null
   }
 
   render(msg,true)
@@ -191,13 +207,44 @@ async function send(){
   document.getElementById("msg").value=""
   replyTo=null
   forwardMsg=null
-  hidePreviews()
+}
+
+// ===== REACTION SEND =====
+
+async function sendReaction(emoji){
+
+  if(!reactionTarget) return
+
+  const chatId=await getChatId(myName,currentUser)
+
+  const msg={
+    type:"reaction",
+    target:reactionTarget,
+    emoji:emoji,
+    from:myName,
+    time:Date.now()
+  }
+
+  await fetch(URL+"/rest/v1/messages",{
+    method:"POST",
+    headers:{apikey:KEY,"Content-Type":"application/json"},
+    body:JSON.stringify({
+      recipient:chatId,
+      sender:myName,
+      data:JSON.stringify(msg),
+      iv:[]
+    })
+  })
+
+  document.getElementById("emojiPicker").style.display="none"
 }
 
 // ===== HISTORY =====
 
 async function loadHistory(){
+  reactionsMap={}
   const chatId=await getChatId(myName,currentUser)
+
   const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
   const list=await r.json()
 
@@ -205,7 +252,12 @@ async function loadHistory(){
 
   list.forEach(m=>{
     const msg=JSON.parse(m.data)
-    render(msg,msg.from===myName)
+
+    if(msg.type==="reaction"){
+      applyReaction(msg)
+    } else {
+      render(msg,msg.from===myName)
+    }
   })
 }
 
@@ -225,24 +277,62 @@ function poll(){
       seen.add(m.id)
 
       const msg=JSON.parse(m.data)
-      render(msg,msg.from===myName)
+
+      if(msg.type==="reaction"){
+        applyReaction(msg)
+        updateReactionsUI()
+      } else {
+        render(msg,msg.from===myName)
+      }
     }
   },1500)
 }
 
-// ===== RENDER REPLY TREE =====
+// ===== REACTIONS =====
 
-function renderReplyChain(container, r, level=0){
-  if(!r) return
+function applyReaction(r){
+  if(!reactionsMap[r.target]) reactionsMap[r.target]={}
+  if(!reactionsMap[r.target][r.emoji]) reactionsMap[r.target][r.emoji]=0
+  reactionsMap[r.target][r.emoji]++
+}
 
-  const div=document.createElement("div")
-  div.className="replyBox"
-  div.style.marginLeft = (level*8)+"px"
-  div.innerText=r.from+": "+r.text
+function updateReactionsUI(){
+  document.querySelectorAll("[data-id]").forEach(el=>{
+    const id=el.dataset.id
+    const r=reactionsMap[id]
+    if(!r) return
 
-  container.appendChild(div)
+    let text=""
+    for(let e in r){
+      text+=e+" "+r[e]+" "
+    }
 
-  renderReplyChain(container, r.replyTo, level+1)
+    let box=el.querySelector(".reactions")
+    if(!box){
+      box=document.createElement("div")
+      box.className="reactions"
+      el.appendChild(box)
+    }
+
+    box.innerText=text
+  })
+}
+
+// ===== EMOJI PICKER =====
+
+function showPicker(id){
+  reactionTarget=id
+  const picker=document.getElementById("emojiPicker")
+  picker.innerHTML=""
+
+  EMOJIS.forEach(e=>{
+    const span=document.createElement("span")
+    span.innerText=e
+    span.onclick=()=>sendReaction(e)
+    picker.appendChild(span)
+  })
+
+  picker.style.display="block"
 }
 
 // ===== RENDER =====
@@ -251,9 +341,13 @@ function render(m,me){
 
   const d=document.createElement("div")
   d.className="msg "+(me?"me":"peer")
+  d.dataset.id=m.id
 
-  d.onclick=()=>setReply(m)
-  d.oncontextmenu=(e)=>{e.preventDefault();setForward(m)}
+  d.onclick=()=>replyTo=m
+  d.oncontextmenu=(e)=>{
+    e.preventDefault()
+    showPicker(m.id)
+  }
 
   if(m.forwardFrom){
     const f=document.createElement("div")
@@ -263,7 +357,10 @@ function render(m,me){
   }
 
   if(m.replyTo){
-    renderReplyChain(d, m.replyTo)
+    const r=document.createElement("div")
+    r.className="replyBox"
+    r.innerText=m.replyTo.from+": "+m.replyTo.text
+    d.appendChild(r)
   }
 
   const text=document.createElement("div")
@@ -277,29 +374,6 @@ function render(m,me){
   d.appendChild(time)
 
   document.getElementById("chat").appendChild(d)
-}
-
-// ===== ACTIONS =====
-
-function setReply(m){
-  replyTo=m
-  showPreview("replyPreview","Reply: "+m.from+": "+m.text)
-}
-
-function setForward(m){
-  forwardMsg=m
-  showPreview("forwardPreview","Forward: "+m.from+": "+m.text)
-}
-
-function showPreview(id,text){
-  const el=document.getElementById(id)
-  el.style.display="block"
-  el.innerText=text
-}
-
-function hidePreviews(){
-  document.getElementById("replyPreview").style.display="none"
-  document.getElementById("forwardPreview").style.display="none"
 }
 
 </script>
