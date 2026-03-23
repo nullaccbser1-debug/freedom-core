@@ -2,29 +2,17 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V42</title>
+<title>Anon Signal V43</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
-
 #app { display:flex; height:100vh; }
 
-#sidebar {
-  width:240px;
-  background:#1e1e1e;
-  padding:10px;
-}
+#sidebar { width:240px; background:#1e1e1e; padding:10px; }
 
-input,button {
-  width:100%;
-  margin:5px 0;
-  padding:8px;
-}
+input,button { width:100%; margin:5px 0; padding:8px; }
 
-.user {
-  padding:8px;
-  cursor:pointer;
-}
+.user { padding:8px; cursor:pointer; }
 .user:hover { background:#333; }
 
 #chat {
@@ -46,15 +34,12 @@ input,button {
 .me { background:#0af; margin-left:auto; }
 .peer { background:#333; }
 
-.time {
-  font-size:10px;
-  opacity:0.6;
-  text-align:right;
-}
+.time { font-size:10px; opacity:0.6; text-align:right; }
 
 .replyBox {
   border-left:3px solid #0af;
   padding-left:6px;
+  margin-bottom:4px;
   font-size:12px;
   opacity:0.8;
 }
@@ -65,16 +50,11 @@ input,button {
   margin-bottom:4px;
 }
 
-#replyPreview, #forwardPreview {
+#replyPreview,#forwardPreview {
   background:#222;
   padding:6px;
   font-size:12px;
   display:none;
-}
-
-#mode {
-  font-size:12px;
-  opacity:0.7;
 }
 </style>
 </head>
@@ -85,7 +65,6 @@ input,button {
 <div id="sidebar">
   <input id="name" placeholder="Your name">
   <button onclick="start()">Start</button>
-  <div id="mode"></div>
   <div id="users"></div>
 </div>
 
@@ -105,16 +84,6 @@ input,button {
 
 <script>
 
-// ===== REDIRECT =====
-const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
-if(location.protocol==="file:"||location.protocol==="content:"){
-  setTimeout(()=>location.href=ONLINE_URL,700)
-}
-document.getElementById("mode").innerText =
-  location.protocol==="http:"||location.protocol==="https:"
-  ? "🟢 ONLINE" : "🟡 LOCAL"
-
-// ===== CONFIG =====
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
 const KEY="sb_publishable_vd185mW1MiBYYxKZg1HwRg_pOuAWq72"
 
@@ -138,18 +107,27 @@ function formatTime(ts){
   return new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
 }
 
+// ===== DEPTH LIMIT =====
+
+function trimReplyChain(r, depth=0){
+  if(!r || depth>2) return null
+  return {
+    id: r.id,
+    from: r.from,
+    text: r.text,
+    replyTo: trimReplyChain(r.replyTo, depth+1)
+  }
+}
+
 // ===== START =====
 
 async function start(){
   myName=document.getElementById("name").value||"anon"
   myId=(await hashStr(myName)).slice(0,32)
 
-  await publish()
   loadUsers()
   setInterval(loadUsers,3000)
   poll()
-
-  alert("READY "+myName)
 }
 
 // ===== USERS =====
@@ -172,31 +150,6 @@ async function loadUsers(){
   })
 }
 
-async function publish(){
-
-  const keypair=await crypto.subtle.generateKey({name:"ECDH",namedCurve:"P-256"},true,["deriveKey"])
-  const pre=await crypto.subtle.generateKey({name:"ECDH",namedCurve:"P-256"},true,["deriveKey"])
-
-  const pub=await crypto.subtle.exportKey("jwk",keypair.publicKey)
-  const prekey=await crypto.subtle.exportKey("jwk",pre.publicKey)
-
-  await fetch(URL+"/rest/v1/users",{
-    method:"POST",
-    headers:{
-      apikey:KEY,
-      "Content-Type":"application/json",
-      "Prefer":"resolution=merge-duplicates"
-    },
-    body:JSON.stringify({
-      id:myId,
-      pubkey:pub,
-      prekey:prekey,
-      name:myName,
-      last_seen:Date.now()
-    })
-  })
-}
-
 // ===== SEND =====
 
 async function send(){
@@ -204,22 +157,22 @@ async function send(){
   if(!currentUser) return
 
   const text=document.getElementById("msg").value
-
   const chatId=await getChatId(myName,currentUser)
 
   let msg={
     id:crypto.randomUUID(),
     from:myName,
-    text:text,
+    text,
     time:Date.now(),
     type:"text",
-    replyTo:replyTo,
+    replyTo: replyTo ? trimReplyChain(replyTo) : null,
     forwardFrom: forwardMsg ? forwardMsg.from : null,
     reactions:{}
   }
 
   if(forwardMsg){
     msg.text = forwardMsg.text
+    msg.replyTo = trimReplyChain(forwardMsg.replyTo)
   }
 
   render(msg,true)
@@ -236,38 +189,24 @@ async function send(){
   })
 
   document.getElementById("msg").value=""
-  clearReply()
-  clearForward()
+  replyTo=null
+  forwardMsg=null
+  hidePreviews()
 }
 
 // ===== HISTORY =====
 
 async function loadHistory(){
   const chatId=await getChatId(myName,currentUser)
-
   const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
   const list=await r.json()
 
   document.getElementById("chat").innerHTML=""
 
   list.forEach(m=>{
-    const msg=parseMsg(m.data)
+    const msg=JSON.parse(m.data)
     render(msg,msg.from===myName)
   })
-}
-
-// ===== PARSER =====
-
-function parseMsg(data){
-  try{
-    const m=JSON.parse(data)
-    if(!m.type){
-      return {id:crypto.randomUUID(),from:m.from,text:m.text,time:m.time||Date.now(),type:"text",replyTo:null,reactions:{}}
-    }
-    return m
-  }catch{
-    return {id:crypto.randomUUID(),from:"?",text:"corrupt",time:Date.now(),type:"text",replyTo:null,reactions:{}}
-  }
 }
 
 // ===== POLL =====
@@ -285,38 +224,25 @@ function poll(){
       if(seen.has(m.id)) continue
       seen.add(m.id)
 
-      const msg=parseMsg(m.data)
+      const msg=JSON.parse(m.data)
       render(msg,msg.from===myName)
     }
   },1500)
 }
 
-// ===== REPLY =====
+// ===== RENDER REPLY TREE =====
 
-function setReply(m){
-  replyTo={text:m.text,from:m.from}
-  const el=document.getElementById("replyPreview")
-  el.style.display="block"
-  el.innerText="Reply: "+m.from+": "+m.text
-}
+function renderReplyChain(container, r, level=0){
+  if(!r) return
 
-function clearReply(){
-  replyTo=null
-  document.getElementById("replyPreview").style.display="none"
-}
+  const div=document.createElement("div")
+  div.className="replyBox"
+  div.style.marginLeft = (level*8)+"px"
+  div.innerText=r.from+": "+r.text
 
-// ===== FORWARD =====
+  container.appendChild(div)
 
-function setForward(m){
-  forwardMsg=m
-  const el=document.getElementById("forwardPreview")
-  el.style.display="block"
-  el.innerText="Forwarding: "+m.from+": "+m.text
-}
-
-function clearForward(){
-  forwardMsg=null
-  document.getElementById("forwardPreview").style.display="none"
+  renderReplyChain(container, r.replyTo, level+1)
 }
 
 // ===== RENDER =====
@@ -327,10 +253,7 @@ function render(m,me){
   d.className="msg "+(me?"me":"peer")
 
   d.onclick=()=>setReply(m)
-  d.oncontextmenu=(e)=>{
-    e.preventDefault()
-    setForward(m)
-  }
+  d.oncontextmenu=(e)=>{e.preventDefault();setForward(m)}
 
   if(m.forwardFrom){
     const f=document.createElement("div")
@@ -340,10 +263,7 @@ function render(m,me){
   }
 
   if(m.replyTo){
-    const r=document.createElement("div")
-    r.className="replyBox"
-    r.innerText=m.replyTo.from+": "+m.replyTo.text
-    d.appendChild(r)
+    renderReplyChain(d, m.replyTo)
   }
 
   const text=document.createElement("div")
@@ -357,6 +277,29 @@ function render(m,me){
   d.appendChild(time)
 
   document.getElementById("chat").appendChild(d)
+}
+
+// ===== ACTIONS =====
+
+function setReply(m){
+  replyTo=m
+  showPreview("replyPreview","Reply: "+m.from+": "+m.text)
+}
+
+function setForward(m){
+  forwardMsg=m
+  showPreview("forwardPreview","Forward: "+m.from+": "+m.text)
+}
+
+function showPreview(id,text){
+  const el=document.getElementById(id)
+  el.style.display="block"
+  el.innerText=text
+}
+
+function hidePreviews(){
+  document.getElementById("replyPreview").style.display="none"
+  document.getElementById("forwardPreview").style.display="none"
 }
 
 </script>
