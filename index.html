@@ -274,7 +274,6 @@ async function send(){
   }
 
   render(msg,true)
-  seen.add(msg.id)
   
   await fetch(URL+"/rest/v1/messages",{
     method:"POST",
