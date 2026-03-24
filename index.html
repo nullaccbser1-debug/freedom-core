@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V47 FIXED</title>
+<title>Anon Signal V46</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -16,10 +16,8 @@ input,button {
   padding:8px;
 }
 
-.user, .group { padding:8px; cursor:pointer; }
+.user { padding:8px; cursor:pointer; }
 .user:hover { background:#333; }
-.group { color:#0af; }
-.group:hover { background:#222; }
 
 #chat {
   flex:1;
@@ -52,6 +50,7 @@ input,button {
 }
 
 .forwardBox { font-size:11px; opacity:0.6; margin-bottom:4px; }
+
 .reactions { margin-top:4px; font-size:13px; }
 
 .reactBtn {
@@ -97,12 +96,8 @@ input,button {
 <div id="sidebar">
   <input id="name" placeholder="Your name">
   <button onclick="start()">Start</button>
-
-  <button onclick="createGroup()">➕ Create Group</button>
-
   <div id="mode"></div>
   <div id="users"></div>
-  <div id="groups"></div>
 </div>
 
 <div style="flex:1; display:flex; flex-direction:column;">
@@ -122,8 +117,7 @@ input,button {
 <div id="emojiPicker"></div>
 
 <script>
-
-// ===== REDIRECT =====
+// ===== REDIRECT ===== СОХРАНИТЬ, НЕ ТРОГАТЬ!
 const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
 if(location.protocol==="file:"||location.protocol==="content:"){
   setTimeout(()=>location.href=ONLINE_URL,700)
@@ -131,12 +125,12 @@ if(location.protocol==="file:"||location.protocol==="content:"){
 document.getElementById("mode").innerText =
   location.protocol==="http:"||location.protocol==="https:"
   ? "🟢 ONLINE" : "🟡 LOCAL"
-
+  
 // ===== CONFIG =====
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
 const KEY="sb_publishable_vd185mW1MiBYYxKZg1HwRg_pOuAWq72"
 
-let myName,myId,currentUser=null,currentChatId=null
+let myName,myId,currentUser=null
 let seen=new Set()
 let replyTo=null
 let forwardMsg=null
@@ -147,44 +141,16 @@ let reactionDedup=new Set()
 
 const EMOJIS=["👍","🔥","😂","❤️","😮","😢"]
 
-// ===== GROUPS =====
-function loadGroups(){
-  const groups=JSON.parse(localStorage.getItem("groups")||"[]")
-  const el=document.getElementById("groups")
-  el.innerHTML="<hr>"
-
-  groups.forEach(g=>{
-    const d=document.createElement("div")
-    d.className="group"
-    d.innerText="👥 "+g.name
-    d.onclick=()=>{
-      currentChatId=g.id
-      currentUser=null
-      loadHistory()
-    }
-    el.appendChild(d)
-  })
-}
-
-function createGroup(){
-  const name=prompt("Group name?")
-  if(!name) return
-
-  const id="group_"+crypto.randomUUID()
-  const groups=JSON.parse(localStorage.getItem("groups")||"[]")
-  groups.push({id,name})
-  localStorage.setItem("groups",JSON.stringify(groups))
-
-  loadGroups()
-}
-
 // ===== E2E =====
+
 let sessionKeys={}
 
 async function getSessionKey(chatId){
   if(sessionKeys[chatId]) return sessionKeys[chatId]
+
   const raw=await crypto.subtle.digest("SHA-256", new TextEncoder().encode(chatId))
   const key=await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt","decrypt"])
+
   sessionKeys[chatId]=key
   return key
 }
@@ -192,6 +158,7 @@ async function getSessionKey(chatId){
 async function encrypt(chatId, obj){
   const key=await getSessionKey(chatId)
   const iv=crypto.getRandomValues(new Uint8Array(12))
+
   const encoded=new TextEncoder().encode(JSON.stringify(obj))
   const cipher=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,encoded)
 
@@ -207,10 +174,13 @@ async function decrypt(chatId, data, iv){
     const bytes=Uint8Array.from(atob(data), c=>c.charCodeAt(0))
     const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv:new Uint8Array(iv)},key,bytes)
     return JSON.parse(new TextDecoder().decode(plain))
-  }catch(e){ return null }
+  }catch(e){
+    return null
+  }
 }
 
 // ===== UTILS =====
+
 async function hashStr(str){
   const buf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(str))
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("")
@@ -235,14 +205,13 @@ function trimReplyChain(r, depth=0){
 }
 
 // ===== START =====
+
 async function start(){
   myName=document.getElementById("name").value||"anon"
   myId=(await hashStr(myName)).slice(0,32)
 
   await publish()
   loadUsers()
-  loadGroups()
-
   setInterval(loadUsers,3000)
   poll()
 
@@ -250,6 +219,7 @@ async function start(){
 }
 
 // ===== USERS =====
+
 async function loadUsers(){
   const r=await fetch(URL+"/rest/v1/users",{headers:{apikey:KEY}})
   const list=await r.json()
@@ -262,11 +232,7 @@ async function loadUsers(){
     const d=document.createElement("div")
     d.className="user"
     d.innerText=u.name
-    d.onclick=async()=>{
-      currentUser=u.name
-      currentChatId=await getChatId(myName,u.name)
-      loadHistory()
-    }
+    d.onclick=()=>{currentUser=u.name;loadHistory()}
     el.appendChild(d)
   })
 }
@@ -274,16 +240,26 @@ async function loadUsers(){
 async function publish(){
   await fetch(URL+"/rest/v1/users",{
     method:"POST",
-    headers:{apikey:KEY,"Content-Type":"application/json","Prefer":"resolution=merge-duplicates"},
-    body:JSON.stringify({id:myId,name:myName,last_seen:Date.now()})
+    headers:{
+      apikey:KEY,
+      "Content-Type":"application/json",
+      "Prefer":"resolution=merge-duplicates"
+    },
+    body:JSON.stringify({
+      id:myId,
+      name:myName,
+      last_seen:Date.now()
+    })
   })
 }
 
 // ===== SEND =====
+
 async function send(){
-  if(!currentChatId) return
+  if(!currentUser) return
 
   const text=document.getElementById("msg").value
+  const chatId=await getChatId(myName,currentUser)
 
   let msg={
     id:crypto.randomUUID(),
@@ -297,13 +273,13 @@ async function send(){
 
   render(msg,true)
 
-  const enc=await encrypt(currentChatId,msg)
+  const enc=await encrypt(chatId,msg)
 
   await fetch(URL+"/rest/v1/messages",{
     method:"POST",
     headers:{apikey:KEY,"Content-Type":"application/json"},
     body:JSON.stringify({
-      recipient:currentChatId,
+      recipient:chatId,
       sender:myName,
       data:enc.data,
       iv:enc.iv
@@ -315,7 +291,146 @@ async function send(){
   clearForward()
 }
 
+// ===== REACTIONS (FIXED E2E) =====
+
+async function sendReaction(emoji){
+  if(!reactionTarget) return
+
+  const chatId=await getChatId(myName,currentUser)
+
+  const msg={
+    id:crypto.randomUUID(),
+    type:"reaction",
+    target:reactionTarget,
+    emoji,
+    from:myName,
+    time:Date.now()
+  }
+
+  const enc=await encrypt(chatId,msg)
+
+  await fetch(URL+"/rest/v1/messages",{
+    method:"POST",
+    headers:{apikey:KEY,"Content-Type":"application/json"},
+    body:JSON.stringify({
+      recipient:chatId,
+      sender:myName,
+      data:enc.data,
+      iv:enc.iv
+    })
+  })
+
+  document.getElementById("emojiPicker").style.display="none"
+}
+
+function applyReaction(r){
+  const key=r.target+"_"+r.from+"_"+r.emoji
+  if(reactionDedup.has(key)) return
+  reactionDedup.add(key)
+
+  if(!reactionsMap[r.target]) reactionsMap[r.target]={}
+  if(!reactionsMap[r.target][r.emoji]) reactionsMap[r.target][r.emoji]=0
+
+  reactionsMap[r.target][r.emoji]++
+}
+
+function updateReactionsUI(){
+  document.querySelectorAll("[data-id]").forEach(el=>{
+    const id=el.dataset.id
+    const r=reactionsMap[id]
+    if(!r) return
+
+    let text=""
+    for(let e in r){
+      text+=e+" "+r[e]+" "
+    }
+
+    let box=el.querySelector(".reactions")
+    if(!box){
+      box=document.createElement("div")
+      box.className="reactions"
+      el.appendChild(box)
+    }
+
+    box.innerText=text
+  })
+}
+
+// ===== HISTORY =====
+
+async function loadHistory(){
+  reactionsMap={}
+  reactionDedup.clear()
+  seen.clear()
+
+  const chatId=await getChatId(myName,currentUser)
+
+  const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
+  const list=await r.json()
+
+  document.getElementById("chat").innerHTML=""
+
+  for(const m of list){
+    seen.add(m.id)
+
+    const msg=await decrypt(chatId,m.data,m.iv)
+    if(!msg) continue
+
+    if(msg.type==="reaction"){
+      applyReaction(msg)
+    } else {
+      render(msg,msg.from===myName)
+    }
+  }
+
+  updateReactionsUI()
+}
+
+// ===== POLL =====
+
+function poll(){
+  setInterval(async()=>{
+    if(!currentUser) return
+
+    const chatId=await getChatId(myName,currentUser)
+
+    const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
+    const list=await r.json()
+
+    for(const m of list){
+      if(seen.has(m.id)) continue
+      seen.add(m.id)
+
+      const msg=await decrypt(chatId,m.data,m.iv)
+      if(!msg) continue
+
+      if(msg.type==="reaction"){
+        applyReaction(msg)
+        updateReactionsUI()
+      } else {
+        render(msg,msg.from===myName)
+      }
+    }
+  },1500)
+}
+
 // ===== UI =====
+
+function showPicker(id){
+  reactionTarget=id
+  const picker=document.getElementById("emojiPicker")
+  picker.innerHTML=""
+
+  EMOJIS.forEach(e=>{
+    const span=document.createElement("span")
+    span.innerText=e
+    span.onclick=()=>sendReaction(e)
+    picker.appendChild(span)
+  })
+
+  picker.style.display="block"
+}
+
 function render(m,me){
   const d=document.createElement("div")
   d.className="msg "+(me?"me":"peer")
@@ -386,31 +501,6 @@ function setForward(m){
 function clearForward(){
   forwardMsg=null
   document.getElementById("forwardPreview").style.display="none"
-}
-
-// ===== POLL =====
-function poll(){
-  setInterval(async()=>{
-    if(!currentChatId) return
-
-    const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+currentChatId,{headers:{apikey:KEY}})
-    const list=await r.json()
-
-    for(const m of list){
-      if(seen.has(m.id)) continue
-      seen.add(m.id)
-
-      const msg=await decrypt(currentChatId,m.data,m.iv)
-      if(!msg) continue
-
-      if(msg.type==="reaction"){
-        applyReaction(msg)
-        updateReactionsUI()
-      } else {
-        render(msg,msg.from===myName)
-      }
-    }
-  },1500)
 }
 
 </script>
