@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V46</title>
+<title>Anon Signal V47</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -18,6 +18,9 @@ input,button {
 
 .user { padding:8px; cursor:pointer; }
 .user:hover { background:#333; }
+
+.group { padding:8px; cursor:pointer; color:#0af; }
+.group:hover { background:#222; }
 
 #chat {
   flex:1;
@@ -96,8 +99,12 @@ input,button {
 <div id="sidebar">
   <input id="name" placeholder="Your name">
   <button onclick="start()">Start</button>
+
+  <button onclick="createGroup()">➕ Create Group</button>
+
   <div id="mode"></div>
   <div id="users"></div>
+  <div id="groups"></div>
 </div>
 
 <div style="flex:1; display:flex; flex-direction:column;">
@@ -117,7 +124,8 @@ input,button {
 <div id="emojiPicker"></div>
 
 <script>
-// ===== REDIRECT ===== СОХРАНИТЬ, НЕ ТРОГАТЬ!
+
+// ===== REDIRECT (НЕ ТРОГАЕМ) =====
 const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
 if(location.protocol==="file:"||location.protocol==="content:"){
   setTimeout(()=>location.href=ONLINE_URL,700)
@@ -125,12 +133,12 @@ if(location.protocol==="file:"||location.protocol==="content:"){
 document.getElementById("mode").innerText =
   location.protocol==="http:"||location.protocol==="https:"
   ? "🟢 ONLINE" : "🟡 LOCAL"
-  
+
 // ===== CONFIG =====
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
 const KEY="sb_publishable_vd185mW1MiBYYxKZg1HwRg_pOuAWq72"
 
-let myName,myId,currentUser=null
+let myName,myId,currentUser=null,currentChatId=null
 let seen=new Set()
 let replyTo=null
 let forwardMsg=null
@@ -141,16 +149,47 @@ let reactionDedup=new Set()
 
 const EMOJIS=["👍","🔥","😂","❤️","😮","😢"]
 
+// ===== GROUPS =====
+
+function loadGroups(){
+  const groups=JSON.parse(localStorage.getItem("groups")||"[]")
+  const el=document.getElementById("groups")
+  el.innerHTML="<hr>"
+
+  groups.forEach(g=>{
+    const d=document.createElement("div")
+    d.className="group"
+    d.innerText="👥 "+g.name
+    d.onclick=()=>{
+      currentChatId=g.id
+      currentUser=null
+      loadHistory()
+    }
+    el.appendChild(d)
+  })
+}
+
+function createGroup(){
+  const name=prompt("Group name?")
+  if(!name) return
+
+  const id="group_"+crypto.randomUUID()
+
+  const groups=JSON.parse(localStorage.getItem("groups")||"[]")
+  groups.push({id,name})
+
+  localStorage.setItem("groups",JSON.stringify(groups))
+  loadGroups()
+}
+
 // ===== E2E =====
 
 let sessionKeys={}
 
 async function getSessionKey(chatId){
   if(sessionKeys[chatId]) return sessionKeys[chatId]
-
   const raw=await crypto.subtle.digest("SHA-256", new TextEncoder().encode(chatId))
   const key=await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt","decrypt"])
-
   sessionKeys[chatId]=key
   return key
 }
@@ -158,14 +197,9 @@ async function getSessionKey(chatId){
 async function encrypt(chatId, obj){
   const key=await getSessionKey(chatId)
   const iv=crypto.getRandomValues(new Uint8Array(12))
-
   const encoded=new TextEncoder().encode(JSON.stringify(obj))
   const cipher=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,encoded)
-
-  return {
-    data:btoa(String.fromCharCode(...new Uint8Array(cipher))),
-    iv:Array.from(iv)
-  }
+  return { data:btoa(String.fromCharCode(...new Uint8Array(cipher))), iv:Array.from(iv) }
 }
 
 async function decrypt(chatId, data, iv){
@@ -174,9 +208,7 @@ async function decrypt(chatId, data, iv){
     const bytes=Uint8Array.from(atob(data), c=>c.charCodeAt(0))
     const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv:new Uint8Array(iv)},key,bytes)
     return JSON.parse(new TextDecoder().decode(plain))
-  }catch(e){
-    return null
-  }
+  }catch(e){ return null }
 }
 
 // ===== UTILS =====
@@ -194,16 +226,6 @@ function formatTime(ts){
   return new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
 }
 
-function trimReplyChain(r, depth=0){
-  if(!r || depth>2) return null
-  return {
-    id:r.id,
-    from:r.from,
-    text:r.text,
-    replyTo: trimReplyChain(r.replyTo, depth+1)
-  }
-}
-
 // ===== START =====
 
 async function start(){
@@ -212,6 +234,8 @@ async function start(){
 
   await publish()
   loadUsers()
+  loadGroups()
+
   setInterval(loadUsers,3000)
   poll()
 
@@ -232,7 +256,11 @@ async function loadUsers(){
     const d=document.createElement("div")
     d.className="user"
     d.innerText=u.name
-    d.onclick=()=>{currentUser=u.name;loadHistory()}
+    d.onclick=async()=>{
+      currentUser=u.name
+      currentChatId=await getChatId(myName,u.name)
+      loadHistory()
+    }
     el.appendChild(d)
   })
 }
@@ -240,46 +268,35 @@ async function loadUsers(){
 async function publish(){
   await fetch(URL+"/rest/v1/users",{
     method:"POST",
-    headers:{
-      apikey:KEY,
-      "Content-Type":"application/json",
-      "Prefer":"resolution=merge-duplicates"
-    },
-    body:JSON.stringify({
-      id:myId,
-      name:myName,
-      last_seen:Date.now()
-    })
+    headers:{apikey:KEY,"Content-Type":"application/json","Prefer":"resolution=merge-duplicates"},
+    body:JSON.stringify({id:myId,name:myName,last_seen:Date.now()})
   })
 }
 
 // ===== SEND =====
 
 async function send(){
-  if(!currentUser) return
+  if(!currentChatId) return
 
   const text=document.getElementById("msg").value
-  const chatId=await getChatId(myName,currentUser)
 
   let msg={
     id:crypto.randomUUID(),
     from:myName,
     text,
     time:Date.now(),
-    type:"text",
-    replyTo: replyTo ? trimReplyChain(replyTo) : null,
-    forwardFrom: forwardMsg ? forwardMsg.from : null
+    type:"text"
   }
 
   render(msg,true)
 
-  const enc=await encrypt(chatId,msg)
+  const enc=await encrypt(currentChatId,msg)
 
   await fetch(URL+"/rest/v1/messages",{
     method:"POST",
     headers:{apikey:KEY,"Content-Type":"application/json"},
     body:JSON.stringify({
-      recipient:chatId,
+      recipient:currentChatId,
       sender:myName,
       data:enc.data,
       iv:enc.iv
@@ -287,16 +304,88 @@ async function send(){
   })
 
   document.getElementById("msg").value=""
-  clearReply()
-  clearForward()
 }
 
-// ===== REACTIONS (FIXED E2E) =====
+// ===== HISTORY =====
+
+async function loadHistory(){
+  reactionsMap={}
+  reactionDedup.clear()
+  seen.clear()
+
+  const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+currentChatId,{headers:{apikey:KEY}})
+  const list=await r.json()
+
+  document.getElementById("chat").innerHTML=""
+
+  for(const m of list){
+    seen.add(m.id)
+    const msg=await decrypt(currentChatId,m.data,m.iv)
+    if(!msg) continue
+
+    if(msg.type==="reaction") applyReaction(msg)
+    else render(msg,msg.from===myName)
+  }
+
+  updateReactionsUI()
+}
+
+// ===== POLL =====
+
+function poll(){
+  setInterval(async()=>{
+    if(!currentChatId) return
+
+    const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+currentChatId,{headers:{apikey:KEY}})
+    const list=await r.json()
+
+    for(const m of list){
+      if(seen.has(m.id)) continue
+      seen.add(m.id)
+
+      const msg=await decrypt(currentChatId,m.data,m.iv)
+      if(!msg) continue
+
+      if(msg.type==="reaction"){
+        applyReaction(msg)
+        updateReactionsUI()
+      } else {
+        render(msg,msg.from===myName)
+      }
+    }
+  },1500)
+}
+
+// ===== RENDER =====
+
+function render(m,me){
+  const d=document.createElement("div")
+  d.className="msg "+(me?"me":"peer")
+  d.dataset.id=m.id
+
+  const btn=document.createElement("div")
+  btn.className="reactBtn"
+  btn.innerText="🙂"
+  btn.onclick=(e)=>{e.stopPropagation();showPicker(m.id)}
+  d.appendChild(btn)
+
+  const text=document.createElement("div")
+  text.innerText=m.from+": "+m.text
+
+  const time=document.createElement("div")
+  time.className="time"
+  time.innerText=formatTime(m.time)
+
+  d.appendChild(text)
+  d.appendChild(time)
+
+  document.getElementById("chat").appendChild(d)
+}
+
+// ===== REACTIONS =====
 
 async function sendReaction(emoji){
   if(!reactionTarget) return
-
-  const chatId=await getChatId(myName,currentUser)
 
   const msg={
     id:crypto.randomUUID(),
@@ -307,13 +396,13 @@ async function sendReaction(emoji){
     time:Date.now()
   }
 
-  const enc=await encrypt(chatId,msg)
+  const enc=await encrypt(currentChatId,msg)
 
   await fetch(URL+"/rest/v1/messages",{
     method:"POST",
     headers:{apikey:KEY,"Content-Type":"application/json"},
     body:JSON.stringify({
-      recipient:chatId,
+      recipient:currentChatId,
       sender:myName,
       data:enc.data,
       iv:enc.iv
@@ -330,7 +419,6 @@ function applyReaction(r){
 
   if(!reactionsMap[r.target]) reactionsMap[r.target]={}
   if(!reactionsMap[r.target][r.emoji]) reactionsMap[r.target][r.emoji]=0
-
   reactionsMap[r.target][r.emoji]++
 }
 
@@ -341,9 +429,7 @@ function updateReactionsUI(){
     if(!r) return
 
     let text=""
-    for(let e in r){
-      text+=e+" "+r[e]+" "
-    }
+    for(let e in r){ text+=e+" "+r[e]+" " }
 
     let box=el.querySelector(".reactions")
     if(!box){
@@ -355,66 +441,6 @@ function updateReactionsUI(){
     box.innerText=text
   })
 }
-
-// ===== HISTORY =====
-
-async function loadHistory(){
-  reactionsMap={}
-  reactionDedup.clear()
-  seen.clear()
-
-  const chatId=await getChatId(myName,currentUser)
-
-  const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
-  const list=await r.json()
-
-  document.getElementById("chat").innerHTML=""
-
-  for(const m of list){
-    seen.add(m.id)
-
-    const msg=await decrypt(chatId,m.data,m.iv)
-    if(!msg) continue
-
-    if(msg.type==="reaction"){
-      applyReaction(msg)
-    } else {
-      render(msg,msg.from===myName)
-    }
-  }
-
-  updateReactionsUI()
-}
-
-// ===== POLL =====
-
-function poll(){
-  setInterval(async()=>{
-    if(!currentUser) return
-
-    const chatId=await getChatId(myName,currentUser)
-
-    const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
-    const list=await r.json()
-
-    for(const m of list){
-      if(seen.has(m.id)) continue
-      seen.add(m.id)
-
-      const msg=await decrypt(chatId,m.data,m.iv)
-      if(!msg) continue
-
-      if(msg.type==="reaction"){
-        applyReaction(msg)
-        updateReactionsUI()
-      } else {
-        render(msg,msg.from===myName)
-      }
-    }
-  },1500)
-}
-
-// ===== UI =====
 
 function showPicker(id){
   reactionTarget=id
@@ -429,78 +455,6 @@ function showPicker(id){
   })
 
   picker.style.display="block"
-}
-
-function render(m,me){
-  const d=document.createElement("div")
-  d.className="msg "+(me?"me":"peer")
-  d.dataset.id=m.id
-
-  d.onclick=()=>setReply(m)
-  d.oncontextmenu=(e)=>{e.preventDefault();setForward(m)}
-
-  const btn=document.createElement("div")
-  btn.className="reactBtn"
-  btn.innerText="🙂"
-  btn.onclick=(e)=>{e.stopPropagation();showPicker(m.id)}
-  d.appendChild(btn)
-
-  if(m.forwardFrom){
-    const f=document.createElement("div")
-    f.className="forwardBox"
-    f.innerText="Forwarded from "+m.forwardFrom
-    d.appendChild(f)
-  }
-
-  if(m.replyTo){
-    renderReplyChain(d, m.replyTo)
-  }
-
-  const text=document.createElement("div")
-  text.innerText=m.from+": "+m.text
-
-  const time=document.createElement("div")
-  time.className="time"
-  time.innerText=formatTime(m.time)
-
-  d.appendChild(text)
-  d.appendChild(time)
-
-  document.getElementById("chat").appendChild(d)
-}
-
-function renderReplyChain(container, r, level=0){
-  if(!r) return
-  const div=document.createElement("div")
-  div.className="replyBox"
-  div.style.marginLeft = (level*8)+"px"
-  div.innerText=r.from+": "+r.text
-  container.appendChild(div)
-  renderReplyChain(container, r.replyTo, level+1)
-}
-
-function setReply(m){
-  replyTo=m
-  const el=document.getElementById("replyPreview")
-  el.style.display="block"
-  el.innerText="Reply: "+m.from+": "+m.text
-}
-
-function clearReply(){
-  replyTo=null
-  document.getElementById("replyPreview").style.display="none"
-}
-
-function setForward(m){
-  forwardMsg=m
-  const el=document.getElementById("forwardPreview")
-  el.style.display="block"
-  el.innerText="Forward: "+m.from+": "+m.text
-}
-
-function clearForward(){
-  forwardMsg=null
-  document.getElementById("forwardPreview").style.display="none"
 }
 
 </script>
