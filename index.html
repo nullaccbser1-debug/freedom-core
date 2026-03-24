@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V44</title>
+<title>Anon Signal V45</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -158,10 +158,47 @@ let seen=new Set()
 let replyTo=null
 let forwardMsg=null
 
-// реакции
 let reactionsMap={}
 let reactionTarget=null
 const EMOJIS=["👍","🔥","😂","❤️","😮","😢"]
+
+// ===== E2E =====
+
+let sessionKeys={}
+
+async function getSessionKey(chatId){
+  if(sessionKeys[chatId]) return sessionKeys[chatId]
+
+  const raw=await crypto.subtle.digest("SHA-256", new TextEncoder().encode(chatId))
+  const key=await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt","decrypt"])
+
+  sessionKeys[chatId]=key
+  return key
+}
+
+async function encrypt(chatId, obj){
+  const key=await getSessionKey(chatId)
+  const iv=crypto.getRandomValues(new Uint8Array(12))
+
+  const encoded=new TextEncoder().encode(JSON.stringify(obj))
+  const cipher=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,encoded)
+
+  return {
+    data:btoa(String.fromCharCode(...new Uint8Array(cipher))),
+    iv:Array.from(iv)
+  }
+}
+
+async function decrypt(chatId, data, iv){
+  try{
+    const key=await getSessionKey(chatId)
+    const bytes=Uint8Array.from(atob(data), c=>c.charCodeAt(0))
+    const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv:new Uint8Array(iv)},key,bytes)
+    return JSON.parse(new TextDecoder().decode(plain))
+  }catch(e){
+    return null
+  }
+}
 
 // ===== UTILS =====
 
@@ -177,8 +214,6 @@ async function getChatId(a,b){
 function formatTime(ts){
   return new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
 }
-
-// ===== REPLY DEPTH =====
 
 function trimReplyChain(r, depth=0){
   if(!r || depth>2) return null
@@ -215,7 +250,6 @@ async function loadUsers(){
 
   list.forEach(u=>{
     if(u.id===myId) return
-
     const d=document.createElement("div")
     d.className="user"
     d.innerText=u.name
@@ -274,15 +308,17 @@ async function send(){
   }
 
   render(msg,true)
-  
+
+  const enc=await encrypt(chatId,msg)
+
   await fetch(URL+"/rest/v1/messages",{
     method:"POST",
     headers:{apikey:KEY,"Content-Type":"application/json"},
     body:JSON.stringify({
       recipient:chatId,
       sender:myName,
-      data:JSON.stringify(msg),
-      iv:[]
+      data:enc.data,
+      iv:enc.iv
     })
   })
 
@@ -291,34 +327,78 @@ async function send(){
   clearForward()
 }
 
-// ===== REACTIONS =====
+// ===== HISTORY =====
 
-async function sendReaction(emoji){
-  if(!reactionTarget) return
+async function loadHistory(){
+  reactionsMap={}
+  seen.clear()
 
   const chatId=await getChatId(myName,currentUser)
 
-  const msg={
-    type:"reaction",
-    target:reactionTarget,
-    emoji,
-    from:myName,
-    time:Date.now()
+  const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
+  const list=await r.json()
+
+  document.getElementById("chat").innerHTML=""
+
+  for(const m of list){
+    seen.add(m.id)
+
+    let msg=null
+
+    if(m.iv && m.iv.length){
+      msg=await decrypt(chatId,m.data,m.iv)
+    }else{
+      msg=JSON.parse(m.data)
+    }
+
+    if(!msg) continue
+
+    if(msg.type==="reaction"){
+      applyReaction(msg)
+    } else {
+      render(msg,msg.from===myName)
+    }
   }
 
-  await fetch(URL+"/rest/v1/messages",{
-    method:"POST",
-    headers:{apikey:KEY,"Content-Type":"application/json"},
-    body:JSON.stringify({
-      recipient:chatId,
-      sender:myName,
-      data:JSON.stringify(msg),
-      iv:[]
-    })
-  })
-
-  document.getElementById("emojiPicker").style.display="none"
+  updateReactionsUI()
 }
+
+// ===== POLL =====
+
+function poll(){
+  setInterval(async()=>{
+    if(!currentUser) return
+
+    const chatId=await getChatId(myName,currentUser)
+
+    const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
+    const list=await r.json()
+
+    for(const m of list){
+      if(seen.has(m.id)) continue
+      seen.add(m.id)
+
+      let msg=null
+
+      if(m.iv && m.iv.length){
+        msg=await decrypt(chatId,m.data,m.iv)
+      }else{
+        msg=JSON.parse(m.data)
+      }
+
+      if(!msg) continue
+
+      if(msg.type==="reaction"){
+        applyReaction(msg)
+        updateReactionsUI()
+      } else {
+        render(msg,msg.from===myName)
+      }
+    }
+  },1500)
+}
+
+// ===== остальное без изменений =====
 
 function applyReaction(r){
   if(!reactionsMap[r.target]) reactionsMap[r.target]={}
@@ -348,62 +428,6 @@ function updateReactionsUI(){
   })
 }
 
-// ===== HISTORY =====
-
-async function loadHistory(){
-  reactionsMap={}
-  seen.clear()
-
-  const chatId=await getChatId(myName,currentUser)
-
-  const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
-  const list=await r.json()
-
-  document.getElementById("chat").innerHTML=""
-
-  list.forEach(m=>{
-    seen.add(m.id)
-    const msg=JSON.parse(m.data)
-
-    if(msg.type==="reaction"){
-      applyReaction(msg)
-    } else {
-      render(msg,msg.from===myName)
-    }
-  })
-
-  updateReactionsUI()
-}
-
-// ===== POLL =====
-
-function poll(){
-  setInterval(async()=>{
-    if(!currentUser) return
-
-    const chatId=await getChatId(myName,currentUser)
-
-    const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
-    const list=await r.json()
-
-    for(const m of list){
-      if(seen.has(m.id)) continue
-      seen.add(m.id)
-
-      const msg=JSON.parse(m.data)
-
-      if(msg.type==="reaction"){
-        applyReaction(msg)
-        updateReactionsUI()
-      } else {
-        render(msg,msg.from===myName)
-      }
-    }
-  },1500)
-}
-
-// ===== PICKER =====
-
 function showPicker(id){
   reactionTarget=id
   const picker=document.getElementById("emojiPicker")
@@ -419,10 +443,7 @@ function showPicker(id){
   picker.style.display="block"
 }
 
-// ===== RENDER =====
-
 function render(m,me){
-
   const d=document.createElement("div")
   d.className="msg "+(me?"me":"peer")
   d.dataset.id=m.id
@@ -472,8 +493,6 @@ function renderReplyChain(container, r, level=0){
 
   renderReplyChain(container, r.replyTo, level+1)
 }
-
-// ===== ACTIONS =====
 
 function setReply(m){
   replyTo=m
