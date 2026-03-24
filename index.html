@@ -362,6 +362,7 @@ async function loadHistory(){
   document.getElementById("chat").innerHTML=""
 
   list.forEach(m=>{
+    seen.add(m.id)
     const msg=JSON.parse(m.data)
 
     if(msg.type==="reaction"){
