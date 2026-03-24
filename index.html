@@ -2,18 +2,13 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V45</title>
+<title>Anon Signal V46</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
-
 #app { display:flex; height:100vh; }
 
-#sidebar {
-  width:240px;
-  background:#1e1e1e;
-  padding:10px;
-}
+#sidebar { width:240px; background:#1e1e1e; padding:10px; }
 
 input,button {
   width:100%;
@@ -21,10 +16,7 @@ input,button {
   padding:8px;
 }
 
-.user {
-  padding:8px;
-  cursor:pointer;
-}
+.user { padding:8px; cursor:pointer; }
 .user:hover { background:#333; }
 
 #chat {
@@ -47,11 +39,7 @@ input,button {
 .me { background:#0af; margin-left:auto; }
 .peer { background:#333; }
 
-.time {
-  font-size:10px;
-  opacity:0.6;
-  text-align:right;
-}
+.time { font-size:10px; opacity:0.6; text-align:right; }
 
 .replyBox {
   border-left:3px solid #0af;
@@ -61,16 +49,9 @@ input,button {
   opacity:0.8;
 }
 
-.forwardBox {
-  font-size:11px;
-  opacity:0.6;
-  margin-bottom:4px;
-}
+.forwardBox { font-size:11px; opacity:0.6; margin-bottom:4px; }
 
-.reactions {
-  margin-top:4px;
-  font-size:13px;
-}
+.reactions { margin-top:4px; font-size:13px; }
 
 .reactBtn {
   position:absolute;
@@ -105,10 +86,7 @@ input,button {
   display:none;
 }
 
-#mode {
-  font-size:12px;
-  opacity:0.7;
-}
+#mode { font-size:12px; opacity:0.7; }
 </style>
 </head>
 <body>
@@ -139,8 +117,7 @@ input,button {
 <div id="emojiPicker"></div>
 
 <script>
-
-// ===== REDIRECT =====
+// ===== REDIRECT ===== СОХРАНИТЬ, НЕ ТРОГАТЬ!
 const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
 if(location.protocol==="file:"||location.protocol==="content:"){
   setTimeout(()=>location.href=ONLINE_URL,700)
@@ -148,7 +125,7 @@ if(location.protocol==="file:"||location.protocol==="content:"){
 document.getElementById("mode").innerText =
   location.protocol==="http:"||location.protocol==="https:"
   ? "🟢 ONLINE" : "🟡 LOCAL"
-
+  
 // ===== CONFIG =====
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
 const KEY="sb_publishable_vd185mW1MiBYYxKZg1HwRg_pOuAWq72"
@@ -160,6 +137,8 @@ let forwardMsg=null
 
 let reactionsMap={}
 let reactionTarget=null
+let reactionDedup=new Set()
+
 const EMOJIS=["👍","🔥","😂","❤️","😮","😢"]
 
 // ===== E2E =====
@@ -259,13 +238,6 @@ async function loadUsers(){
 }
 
 async function publish(){
-
-  const keypair=await crypto.subtle.generateKey({name:"ECDH",namedCurve:"P-256"},true,["deriveKey"])
-  const pre=await crypto.subtle.generateKey({name:"ECDH",namedCurve:"P-256"},true,["deriveKey"])
-
-  const pub=await crypto.subtle.exportKey("jwk",keypair.publicKey)
-  const prekey=await crypto.subtle.exportKey("jwk",pre.publicKey)
-
   await fetch(URL+"/rest/v1/users",{
     method:"POST",
     headers:{
@@ -275,8 +247,6 @@ async function publish(){
     },
     body:JSON.stringify({
       id:myId,
-      pubkey:pub,
-      prekey:prekey,
       name:myName,
       last_seen:Date.now()
     })
@@ -286,7 +256,6 @@ async function publish(){
 // ===== SEND =====
 
 async function send(){
-
   if(!currentUser) return
 
   const text=document.getElementById("msg").value
@@ -300,11 +269,6 @@ async function send(){
     type:"text",
     replyTo: replyTo ? trimReplyChain(replyTo) : null,
     forwardFrom: forwardMsg ? forwardMsg.from : null
-  }
-
-  if(forwardMsg){
-    msg.text = forwardMsg.text
-    msg.replyTo = trimReplyChain(forwardMsg.replyTo)
   }
 
   render(msg,true)
@@ -327,10 +291,76 @@ async function send(){
   clearForward()
 }
 
+// ===== REACTIONS (FIXED E2E) =====
+
+async function sendReaction(emoji){
+  if(!reactionTarget) return
+
+  const chatId=await getChatId(myName,currentUser)
+
+  const msg={
+    id:crypto.randomUUID(),
+    type:"reaction",
+    target:reactionTarget,
+    emoji,
+    from:myName,
+    time:Date.now()
+  }
+
+  const enc=await encrypt(chatId,msg)
+
+  await fetch(URL+"/rest/v1/messages",{
+    method:"POST",
+    headers:{apikey:KEY,"Content-Type":"application/json"},
+    body:JSON.stringify({
+      recipient:chatId,
+      sender:myName,
+      data:enc.data,
+      iv:enc.iv
+    })
+  })
+
+  document.getElementById("emojiPicker").style.display="none"
+}
+
+function applyReaction(r){
+  const key=r.target+"_"+r.from+"_"+r.emoji
+  if(reactionDedup.has(key)) return
+  reactionDedup.add(key)
+
+  if(!reactionsMap[r.target]) reactionsMap[r.target]={}
+  if(!reactionsMap[r.target][r.emoji]) reactionsMap[r.target][r.emoji]=0
+
+  reactionsMap[r.target][r.emoji]++
+}
+
+function updateReactionsUI(){
+  document.querySelectorAll("[data-id]").forEach(el=>{
+    const id=el.dataset.id
+    const r=reactionsMap[id]
+    if(!r) return
+
+    let text=""
+    for(let e in r){
+      text+=e+" "+r[e]+" "
+    }
+
+    let box=el.querySelector(".reactions")
+    if(!box){
+      box=document.createElement("div")
+      box.className="reactions"
+      el.appendChild(box)
+    }
+
+    box.innerText=text
+  })
+}
+
 // ===== HISTORY =====
 
 async function loadHistory(){
   reactionsMap={}
+  reactionDedup.clear()
   seen.clear()
 
   const chatId=await getChatId(myName,currentUser)
@@ -343,14 +373,7 @@ async function loadHistory(){
   for(const m of list){
     seen.add(m.id)
 
-    let msg=null
-
-    if(m.iv && m.iv.length){
-      msg=await decrypt(chatId,m.data,m.iv)
-    }else{
-      msg=JSON.parse(m.data)
-    }
-
+    const msg=await decrypt(chatId,m.data,m.iv)
     if(!msg) continue
 
     if(msg.type==="reaction"){
@@ -378,14 +401,7 @@ function poll(){
       if(seen.has(m.id)) continue
       seen.add(m.id)
 
-      let msg=null
-
-      if(m.iv && m.iv.length){
-        msg=await decrypt(chatId,m.data,m.iv)
-      }else{
-        msg=JSON.parse(m.data)
-      }
-
+      const msg=await decrypt(chatId,m.data,m.iv)
       if(!msg) continue
 
       if(msg.type==="reaction"){
@@ -398,35 +414,7 @@ function poll(){
   },1500)
 }
 
-// ===== остальное без изменений =====
-
-function applyReaction(r){
-  if(!reactionsMap[r.target]) reactionsMap[r.target]={}
-  if(!reactionsMap[r.target][r.emoji]) reactionsMap[r.target][r.emoji]=0
-  reactionsMap[r.target][r.emoji]++
-}
-
-function updateReactionsUI(){
-  document.querySelectorAll("[data-id]").forEach(el=>{
-    const id=el.dataset.id
-    const r=reactionsMap[id]
-    if(!r) return
-
-    let text=""
-    for(let e in r){
-      text+=e+" "+r[e]+" "
-    }
-
-    let box=el.querySelector(".reactions")
-    if(!box){
-      box=document.createElement("div")
-      box.className="reactions"
-      el.appendChild(box)
-    }
-
-    box.innerText=text
-  })
-}
+// ===== UI =====
 
 function showPicker(id){
   reactionTarget=id
@@ -483,14 +471,11 @@ function render(m,me){
 
 function renderReplyChain(container, r, level=0){
   if(!r) return
-
   const div=document.createElement("div")
   div.className="replyBox"
   div.style.marginLeft = (level*8)+"px"
   div.innerText=r.from+": "+r.text
-
   container.appendChild(div)
-
   renderReplyChain(container, r.replyTo, level+1)
 }
 
