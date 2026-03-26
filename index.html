@@ -155,17 +155,22 @@ async function kdf(input){
   return new Uint8Array(buf)
 }
 
-// ===== X3DH INIT =====
-
+// ===== X3DH INIT (исправлено) =====
 async function initSession(user){
-
   if(sessions[user]) return sessions[user]
 
   const id=(await hashStr(user)).slice(0,32)
 
   const r=await fetch(URL+"/rest/v1/users?id=eq."+id,{headers:{apikey:KEY}})
+  if (!r.ok) {
+    console.error("Failed to fetch peer pubkey", r.status)
+    return null
+  }
   const d=await r.json()
-  if(!d[0]) return
+  if(!d[0]) {
+    console.warn("Peer not found or not published yet:", user)
+    return null
+  }
 
   const remotePub=await crypto.subtle.importKey(
     "jwk",
@@ -194,11 +199,12 @@ async function initSession(user){
   return sessions[user]
 }
 
-// ===== ENCRYPT =====
-
+// ===== ENCRYPT (исправлено) =====
 async function encrypt(chatId, msg){
-
   const s = await initSession(currentUser)
+  if(!s) {
+    throw new Error(`Cannot initialize session with ${currentUser}. Make sure the other user clicked "Start" and published their key.`)
+  }
 
   let chain = new Uint8Array(s.sendChain)
   chain = await kdf(chain)
@@ -223,31 +229,14 @@ async function encrypt(chatId, msg){
   }
 }
 
-// ===== DECRYPT =====
-
+// ===== DECRYPT (исправлено — убрал ломавший reset) =====
 async function decrypt(chatId, data, iv, payload){
-
   const s = await initSession(currentUser)
-
-  if(payload.dh_pub){
-    const remote=await crypto.subtle.importKey(
-      "jwk",
-      payload.dh_pub,
-      {name:"ECDH",namedCurve:"P-256"},
-      true, []
-    )
-
-    const shared=await crypto.subtle.deriveBits(
-      {name:"ECDH",public:remote},
-      keypair.privateKey,
-      256
-    )
-
-    const root = await kdf(shared)
-    s.recvChain = Array.from(root)
-    s.Nr=0
+  if(!s) {
+    throw new Error(`Cannot initialize session with ${currentUser}. Make sure the other user started the app.`)
   }
 
+  // УБРАН if(payload.dh_pub) — он ломал ratchet на каждом сообщении
   let chain=new Uint8Array(s.recvChain)
   chain=await kdf(chain)
   s.recvChain=Array.from(chain)
@@ -261,12 +250,12 @@ async function decrypt(chatId, data, iv, payload){
     saveSessions()
     return JSON.parse(new TextDecoder().decode(plain))
   }catch(e){
+    console.warn("Decrypt failed", e)
     return null
   }
 }
 
-// ===== UTILS =====
-
+// ===== UTILS (без изменений) =====
 async function hashStr(str){
   const buf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(str))
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("")
@@ -291,18 +280,15 @@ function trimReplyChain(r, depth=0){
 }
 
 // ===== START =====
-
 async function start(){
   myName=document.getElementById("name").value||"anon"
   myId=(await hashStr(myName)).slice(0,32)
 
-  //Фикс регистрации в users
-  
   keypair = await crypto.subtle.generateKey(
-  {name:"ECDH", namedCurve:"P-256"},
-  true,
-  ["deriveKey"]
-)
+    {name:"ECDH", namedCurve:"P-256"},
+    true,
+    ["deriveKey"]
+  )
   
   await publish()
   loadUsers()
@@ -312,8 +298,7 @@ async function start(){
   alert("READY "+myName)
 }
 
-// ===== USERS =====
-
+// ===== USERS & PUBLISH (без изменений) =====
 async function loadUsers(){
   const r=await fetch(URL+"/rest/v1/users",{headers:{apikey:KEY}})
   const list=await r.json()
@@ -332,7 +317,6 @@ async function loadUsers(){
 }
 
 async function publish(){
-
   const pub = await crypto.subtle.exportKey("jwk", keypair.publicKey)
 
   await fetch(URL+"/rest/v1/users",{
@@ -346,14 +330,13 @@ async function publish(){
       id:myId,
       name:myName,
       pubkey: JSON.stringify(pub),
-      prekey: JSON.stringify(pub), // временно = pubkey, фиксим регистрацию в users
+      prekey: JSON.stringify(pub),
       last_seen: Date.now()
     })
   })
 }
 
-// ===== SEND =====
-
+// ===== SEND (с try/catch) =====
 async function send(){
   if(!currentUser) return
 
@@ -372,29 +355,34 @@ async function send(){
 
   render(msg,true)
 
-  const enc=await encrypt(chatId,msg)
+  try {
+    const enc=await encrypt(chatId,msg)
 
-  await fetch(URL+"/rest/v1/messages",{
-    method:"POST",
-    headers:{apikey:KEY,"Content-Type":"application/json"},
-    body:JSON.stringify({
-      recipient:chatId,
-      sender:myName,
-      data:enc.data,
-      iv:enc.iv,
-      dh_pub:enc.dh_pub,
-      n:enc.n,
-      pn:enc.pn
+    await fetch(URL+"/rest/v1/messages",{
+      method:"POST",
+      headers:{apikey:KEY,"Content-Type":"application/json"},
+      body:JSON.stringify({
+        recipient:chatId,
+        sender:myName,
+        data:enc.data,
+        iv:enc.iv,
+        dh_pub:enc.dh_pub,
+        n:enc.n,
+        pn:enc.pn
+      })
     })
-  })
+  } catch(e) {
+    console.error("Send error:", e)
+    alert("Ошибка отправки: " + e.message)
+    return
+  }
 
   document.getElementById("msg").value=""
   clearReply()
   clearForward()
 }
 
-// ===== REACTIONS (FIXED E2E) =====
-
+// ===== REACTIONS (исправлено + локальное применение) =====
 async function sendReaction(emoji){
   if(!reactionTarget) return
 
@@ -409,18 +397,30 @@ async function sendReaction(emoji){
     time:Date.now()
   }
 
-  const enc=await encrypt(chatId,msg)
+  try {
+    const enc=await encrypt(chatId,msg)
 
-  await fetch(URL+"/rest/v1/messages",{
-    method:"POST",
-    headers:{apikey:KEY,"Content-Type":"application/json"},
-    body:JSON.stringify({
-      recipient:chatId,
-      sender:myName,
-      data:enc.data,
-      iv:enc.iv
+    await fetch(URL+"/rest/v1/messages",{
+      method:"POST",
+      headers:{apikey:KEY,"Content-Type":"application/json"},
+      body:JSON.stringify({
+        recipient:chatId,
+        sender:myName,
+        data:enc.data,
+        iv:enc.iv,
+        dh_pub:enc.dh_pub,
+        n:enc.n,
+        pn:enc.pn
+      })
     })
-  })
+
+    // сразу показываем свою реакцию
+    applyReaction(msg)
+    updateReactionsUI()
+  } catch(e) {
+    console.error("Reaction error:", e)
+    alert("Ошибка реакции: " + e.message)
+  }
 
   document.getElementById("emojiPicker").style.display="none"
 }
@@ -453,13 +453,11 @@ function updateReactionsUI(){
       box.className="reactions"
       el.appendChild(box)
     }
-
     box.innerText=text
   })
 }
 
-// ===== HISTORY =====
-
+// ===== HISTORY & POLL (без изменений) =====
 async function loadHistory(){
   reactionsMap={}
   reactionDedup.clear()
@@ -488,8 +486,6 @@ async function loadHistory(){
   updateReactionsUI()
 }
 
-// ===== POLL =====
-
 function poll(){
   setInterval(async()=>{
     if(!currentUser) return
@@ -515,8 +511,7 @@ function poll(){
   },1500)
 }
 
-// ===== UI =====
-
+// ===== UI (без изменений) =====
 function showPicker(id){
   reactionTarget=id
   const picker=document.getElementById("emojiPicker")
@@ -605,6 +600,5 @@ function clearForward(){
 }
 
 </script>
-
 </body>
 </html>
