@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V48.1 — Full Double Ratchet (fixed)</title>
+<title>Anon Signal V48.2 — Full Double Ratchet (stable)</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -125,7 +125,7 @@ const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
 if(location.protocol==="file:"||location.protocol==="content:"){
   setTimeout(()=>location.href=ONLINE_URL,700)
 }
-document.getElementById("mode").innerText = "🟢 ONLINE (V48.1 Full Double Ratchet)"
+document.getElementById("mode").innerText = "🟢 ONLINE (V48.2 Full Double Ratchet)"
 
 // ===== CONFIG =====
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
@@ -143,14 +143,14 @@ let keypair
 
 const EMOJIS=["👍","🔥","😂","❤️","😮","😢"]
 
-// ===== CRYPTO CORE — FULL DOUBLE RATCHET =====
+// ===== CRYPTO CORE =====
 let sessions = JSON.parse(localStorage.getItem("sessions")||"{}")
 
 function saveSessions(){ localStorage.setItem("sessions", JSON.stringify(sessions)) }
 
 async function kdf(input){ const buf=await crypto.subtle.digest("SHA-256", input); return new Uint8Array(buf) }
 
-async function loadOrCreateKeypair(){ /* без изменений */ 
+async function loadOrCreateKeypair(){
   const saved = localStorage.getItem("identityKey")
   if(saved){
     const jwk = JSON.parse(saved)
@@ -167,13 +167,20 @@ async function loadOrCreateKeypair(){ /* без изменений */
 
 async function generateEphemeral(){ return await crypto.subtle.generateKey({name:"ECDH", namedCurve:"P-256"}, true, ["deriveBits","deriveKey"]) }
 
+// ===== RESET SESSION FOR HISTORY REPLAY =====
+function resetSession(user){
+  if(sessions[user]) delete sessions[user]
+  saveSessions()
+}
+
 // ===== X3DH + Double Ratchet INIT =====
 async function initSession(user){
   if(sessions[user]) return sessions[user]
-  // ... (код initSession полностью как в V48 — без изменений)
+
   const id=(await hashStr(user)).slice(0,32)
-  const r=await fetch(URL+"/rest/v1/users?id=eq."+id,{headers:{apikey:KEY}})
-  if (!r.ok) return null
+  let r
+  try { r = await fetch(URL+"/rest/v1/users?id=eq."+id,{headers:{apikey:KEY}}) } catch(e){ console.warn("users fetch failed",e); return null }
+  if (!r || !r.ok) return null
   const d=await r.json()
   if(!d[0]) return null
 
@@ -189,8 +196,8 @@ async function initSession(user){
   return sessions[user]
 }
 
-// ===== ENCRYPT / DECRYPT (точно как в V48) =====
-async function encrypt(chatId, msg){ /* полностью как в вашем V48 */ 
+// ===== ENCRYPT / DECRYPT (Full Double Ratchet) =====
+async function encrypt(chatId, msg){
   let s = await initSession(currentUser)
   if(!s) throw new Error(`Нет сессии с ${currentUser}`)
 
@@ -219,7 +226,6 @@ async function encrypt(chatId, msg){ /* полностью как в вашем 
   const cipher=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,enc)
 
   saveSessions()
-
   return { data:btoa(String.fromCharCode(...new Uint8Array(cipher))), iv:Array.from(iv), dh_pub:newDHPub, n:s.Ns, pn:s.Nr }
 }
 
@@ -228,15 +234,17 @@ async function decrypt(chatId, data, iv, payload){
   if(!s) { console.warn(`Нет сессии с ${currentUser}`); return null }
 
   if(payload.dh_pub){
-    const remote = await crypto.subtle.importKey("jwk", payload.dh_pub, {name:"ECDH",namedCurve:"P-256"}, true, [])
-    const ourEphem = await crypto.subtle.importKey("jwk", s.ourEphemeralPriv, {name:"ECDH",namedCurve:"P-256"}, true, ["deriveBits"])
-    const shared = await crypto.subtle.deriveBits({name:"ECDH",public:remote}, ourEphem, 256)
-    const dh = await kdf(shared)
-    const newRoot = await kdf(new Uint8Array([...s.rootKey, ...dh]))
-    s.rootKey = Array.from(newRoot)
-    s.theirLastDHPub = payload.dh_pub
-    const newEphem = await generateEphemeral()
-    s.ourEphemeralPriv = await crypto.subtle.exportKey("jwk", newEphem.privateKey)
+    try{
+      const remote = await crypto.subtle.importKey("jwk", payload.dh_pub, {name:"ECDH",namedCurve:"P-256"}, true, [])
+      const ourEphem = await crypto.subtle.importKey("jwk", s.ourEphemeralPriv, {name:"ECDH",namedCurve:"P-256"}, true, ["deriveBits"])
+      const shared = await crypto.subtle.deriveBits({name:"ECDH",public:remote}, ourEphem, 256)
+      const dh = await kdf(shared)
+      const newRoot = await kdf(new Uint8Array([...s.rootKey, ...dh]))
+      s.rootKey = Array.from(newRoot)
+      s.theirLastDHPub = payload.dh_pub
+      const newEphem = await generateEphemeral()
+      s.ourEphemeralPriv = await crypto.subtle.exportKey("jwk", newEphem.privateKey)
+    }catch(e){ console.warn("DH-ratchet step failed", e); }
   }
 
   let chain=new Uint8Array(s.recvChain)
@@ -257,14 +265,13 @@ async function decrypt(chatId, data, iv, payload){
   }
 }
 
-// ===== UTILS, START, EXPORT/IMPORT, USERS, SEND, REACTIONS, UI — без изменений (как в V48) =====
-// (я не дублирую их здесь, чтобы сообщение не было огромным — они остались **точно такими же**)
-
+// ===== UTILS =====
 async function hashStr(str){ const buf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(str)); return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("") }
 async function getChatId(a,b){ return (await hashStr([a,b].sort().join("|"))).slice(0,32) }
 function formatTime(ts){ return new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) }
 function trimReplyChain(r, depth=0){ if(!r || depth>2) return null; return {id:r.id, from:r.from, text:r.text, replyTo: trimReplyChain(r.replyTo, depth+1)} }
 
+// ===== START =====
 async function start(){
   myName=document.getElementById("name").value||"anon"
   myId=(await hashStr(myName)).slice(0,32)
@@ -273,42 +280,78 @@ async function start(){
   loadUsers()
   setInterval(loadUsers,3000)
   poll()
-  alert("READY "+myName+" — Full Double Ratchet V48.1")
+  alert("READY "+myName+" — Full Double Ratchet V48.2")
 }
 
-function exportKeys(){ /* как в V48 */ 
-  const data = {identityKey: localStorage.getItem("identityKey"), sessions: localStorage.getItem("sessions")}
-  const blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json"})
-  const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "signal-keys.json"; a.click(); URL.revokeObjectURL(url)
+// ===== EXPORT / IMPORT (исправлено) =====
+function exportKeys(){
+  try{
+    const data = {identityKey: localStorage.getItem("identityKey"), sessions: localStorage.getItem("sessions")}
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json"})
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = "signal-keys.json"
+    a.click()
+    URL.revokeObjectURL(url)
+  }catch(e){ console.error("Export failed", e); alert("Export не сработал (попробуйте в Chrome/Edge)") }
 }
-async function importKeys(e){ /* как в V48 */ 
-  const file = e.target.files[0]; if(!file) return; const text = await file.text(); const data = JSON.parse(text)
+async function importKeys(e){
+  const file = e.target.files[0]
+  if(!file) return
+  const text = await file.text()
+  const data = JSON.parse(text)
   if(data.identityKey) localStorage.setItem("identityKey", data.identityKey)
   if(data.sessions) localStorage.setItem("sessions", data.sessions)
-  alert("Ключи импортированы! Перезагрузите страницу."); location.reload()
+  alert("Ключи импортированы! Перезагрузите страницу.")
+  location.reload()
 }
 
-async function loadUsers(){ /* как в V48 */ 
-  const r=await fetch(URL+"/rest/v1/users",{headers:{apikey:KEY}}); const list=await r.json()
-  const el=document.getElementById("users"); el.innerHTML=""
-  list.forEach(u=>{ if(u.id===myId) return; const d=document.createElement("div"); d.className="user"; d.innerText=u.name; d.onclick=()=>{currentUser=u.name;loadHistory()}; el.appendChild(d) })
+// ===== USERS & PUBLISH (с обработкой ошибок) =====
+async function loadUsers(){
+  try{
+    const r=await fetch(URL+"/rest/v1/users",{headers:{apikey:KEY}})
+    const list=await r.json()
+    const el=document.getElementById("users")
+    el.innerHTML=""
+    list.forEach(u=>{
+      if(u.id===myId) return
+      const d=document.createElement("div")
+      d.className="user"
+      d.innerText=u.name
+      d.onclick=()=>{currentUser=u.name;loadHistory()}
+      el.appendChild(d)
+    })
+  }catch(e){ console.warn("loadUsers failed", e) }
 }
 
-async function publish(){ /* как в V48 */ 
-  const pub = await crypto.subtle.exportKey("jwk", keypair.publicKey)
-  await fetch(URL+"/rest/v1/users",{method:"POST",headers:{apikey:KEY,"Content-Type":"application/json","Prefer":"resolution=merge-duplicates"},body:JSON.stringify({id:myId,name:myName,pubkey:JSON.stringify(pub),prekey:JSON.stringify(pub),last_seen:Date.now()})})
+async function publish(){
+  try{
+    const pub = await crypto.subtle.exportKey("jwk", keypair.publicKey)
+    await fetch(URL+"/rest/v1/users",{
+      method:"POST",
+      headers:{apikey:KEY,"Content-Type":"application/json","Prefer":"resolution=merge-duplicates"},
+      body:JSON.stringify({id:myId,name:myName,pubkey:JSON.stringify(pub),prekey:JSON.stringify(pub),last_seen:Date.now()})
+    })
+  }catch(e){ console.warn("publish failed", e) }
 }
 
-// ===== ИСПРАВЛЕННЫЕ loadHistory и poll (главное изменение) =====
+// ===== LOAD HISTORY + POLL (главное исправление) =====
 async function loadHistory(){
+  if(!currentUser) return
   reactionsMap={}; reactionDedup.clear(); seen.clear()
+  resetSession(currentUser)                    // ← КЛЮЧЕВОЕ: перестраиваем ratchet с нуля
+
   const chatId=await getChatId(myName,currentUser)
-  const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId+"&order=created_at.asc",{headers:{apikey:KEY}})
-  const list=await r.json()
+  let list = []
+  try{
+    const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId+"&order=created_at.asc",{headers:{apikey:KEY}})
+    list=await r.json()
+  }catch(e){ console.warn("loadHistory fetch failed", e); return }
 
   document.getElementById("chat").innerHTML=""
 
-  for(const m of list){   // ← теперь строго по времени
+  for(const m of list){
     seen.add(m.id)
     const msg=await decrypt(chatId,m.data,m.iv,m)
     if(!msg) continue
@@ -322,8 +365,11 @@ function poll(){
   setInterval(async()=>{
     if(!currentUser) return
     const chatId=await getChatId(myName,currentUser)
-    const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId+"&order=created_at.asc",{headers:{apikey:KEY}})
-    const list=await r.json()
+    let list = []
+    try{
+      const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId+"&order=created_at.asc",{headers:{apikey:KEY}})
+      list=await r.json()
+    }catch(e){ console.warn("poll fetch failed", e); return }
 
     for(const m of list){
       if(seen.has(m.id)) continue
@@ -335,9 +381,8 @@ function poll(){
   },1500)
 }
 
-// (все остальные функции — send, sendReaction, applyReaction, updateReactionsUI, showPicker, render, renderReplyChain, setReply и т.д. — **точно такие же**, как в вашей V48)
-
-async function send(){ /* как в V48 */ 
+// ===== SEND, REACTIONS, UI (без изменений) =====
+async function send(){
   if(!currentUser) return
   const text=document.getElementById("msg").value
   const chatId=await getChatId(myName,currentUser)
@@ -352,7 +397,7 @@ async function send(){ /* как в V48 */
   clearForward()
 }
 
-async function sendReaction(emoji){ /* как в V48 */ 
+async function sendReaction(emoji){
   if(!reactionTarget) return
   const chatId=await getChatId(myName,currentUser)
   const msg={id:crypto.randomUUID(),type:"reaction",target:reactionTarget,emoji,from:myName,time:Date.now()}
@@ -365,7 +410,7 @@ async function sendReaction(emoji){ /* как в V48 */
   document.getElementById("emojiPicker").style.display="none"
 }
 
-function applyReaction(r){ /* как в V48 */ 
+function applyReaction(r){
   const key=r.target+"_"+r.from+"_"+r.emoji
   if(reactionDedup.has(key)) return
   reactionDedup.add(key)
@@ -374,15 +419,36 @@ function applyReaction(r){ /* как в V48 */
   reactionsMap[r.target][r.emoji]++
 }
 
-function updateReactionsUI(){ /* как в V48 */ 
-  document.querySelectorAll("[data-id]").forEach(el=>{ const id=el.dataset.id; const r=reactionsMap[id]; if(!r) return; let text=""; for(let e in r) text+=e+" "+r[e]+" "; let box=el.querySelector(".reactions"); if(!box){ box=document.createElement("div"); box.className="reactions"; el.appendChild(box) } box.innerText=text })
+function updateReactionsUI(){
+  document.querySelectorAll("[data-id]").forEach(el=>{
+    const id=el.dataset.id; const r=reactionsMap[id]
+    if(!r) return
+    let text=""; for(let e in r) text+=e+" "+r[e]+" "
+    let box=el.querySelector(".reactions")
+    if(!box){ box=document.createElement("div"); box.className="reactions"; el.appendChild(box) }
+    box.innerText=text
+  })
 }
 
-function showPicker(id){ /* как в V48 */ reactionTarget=id; const picker=document.getElementById("emojiPicker"); picker.innerHTML=""; EMOJIS.forEach(e=>{ const span=document.createElement("span"); span.innerText=e; span.onclick=()=>sendReaction(e); picker.appendChild(span) }); picker.style.display="block" }
+function showPicker(id){
+  reactionTarget=id
+  const picker=document.getElementById("emojiPicker")
+  picker.innerHTML=""
+  EMOJIS.forEach(e=>{ const span=document.createElement("span"); span.innerText=e; span.onclick=()=>sendReaction(e); picker.appendChild(span) })
+  picker.style.display="block"
+}
 
-function render(m,me){ /* как в V48 */ 
-  const d=document.createElement("div"); d.className="msg "+(me?"me":"peer"); d.dataset.id=m.id; d.onclick=()=>setReply(m); d.oncontextmenu=(e)=>{e.preventDefault();setForward(m)}
-  const btn=document.createElement("div"); btn.className="reactBtn"; btn.innerText="🙂"; btn.onclick=(e)=>{e.stopPropagation();showPicker(m.id)}; d.appendChild(btn)
+function render(m,me){
+  const d=document.createElement("div")
+  d.className="msg "+(me?"me":"peer")
+  d.dataset.id=m.id
+  d.onclick=()=>setReply(m)
+  d.oncontextmenu=(e)=>{e.preventDefault();setForward(m)}
+  const btn=document.createElement("div")
+  btn.className="reactBtn"
+  btn.innerText="🙂"
+  btn.onclick=(e)=>{e.stopPropagation();showPicker(m.id)}
+  d.appendChild(btn)
   if(m.forwardFrom){ const f=document.createElement("div"); f.className="forwardBox"; f.innerText="Forwarded from "+m.forwardFrom; d.appendChild(f) }
   if(m.replyTo) renderReplyChain(d, m.replyTo)
   const text=document.createElement("div"); text.innerText=m.from+": "+m.text
@@ -390,7 +456,17 @@ function render(m,me){ /* как в V48 */
   d.appendChild(text); d.appendChild(time)
   document.getElementById("chat").appendChild(d)
 }
-function renderReplyChain(container, r, level=0){ if(!r) return; const div=document.createElement("div"); div.className="replyBox"; div.style.marginLeft = (level*8)+"px"; div.innerText=r.from+": "+r.text; container.appendChild(div); renderReplyChain(container, r.replyTo, level+1) }
+
+function renderReplyChain(container, r, level=0){
+  if(!r) return
+  const div=document.createElement("div")
+  div.className="replyBox"
+  div.style.marginLeft = (level*8)+"px"
+  div.innerText=r.from+": "+r.text
+  container.appendChild(div)
+  renderReplyChain(container, r.replyTo, level+1)
+}
+
 function setReply(m){ replyTo=m; const el=document.getElementById("replyPreview"); el.style.display="block"; el.innerText="Reply: "+m.from+": "+m.text }
 function clearReply(){ replyTo=null; document.getElementById("replyPreview").style.display="none" }
 function setForward(m){ forwardMsg=m; const el=document.getElementById("forwardPreview"); el.style.display="block"; el.innerText="Forward: "+m.from+": "+m.text }
