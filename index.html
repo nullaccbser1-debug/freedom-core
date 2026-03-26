@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V48.3 — Stable Double Ratchet</title>
+<title>Anon Signal V48.4 — Stable Double Ratchet</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -125,7 +125,7 @@ const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
 if(location.protocol==="file:"||location.protocol==="content:"){
   setTimeout(()=>location.href=ONLINE_URL,700)
 }
-document.getElementById("mode").innerText = "🟢 ONLINE (V48.3 Stable)"
+document.getElementById("mode").innerText = "🟢 ONLINE (V48.4 Stable)"
 
 // ===== CONFIG =====
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
@@ -141,15 +141,16 @@ let reactionTarget=null
 let reactionDedup=new Set()
 let keypair
 
-// КЭШ расшифрованных сообщений (главное исправление)
-let decryptedCache = {} // chatId → array of messages
+// КЭШ расшифрованных сообщений (сохраняется в localStorage)
+let decryptedCache = JSON.parse(localStorage.getItem("decryptedCache") || "{}")
 
 const EMOJIS=["👍","🔥","😂","❤️","😮","😢"]
 
-// ===== CRYPTO CORE (Double Ratchet) =====
+// ===== CRYPTO CORE =====
 let sessions = JSON.parse(localStorage.getItem("sessions")||"{}")
 
 function saveSessions(){ localStorage.setItem("sessions", JSON.stringify(sessions)) }
+function saveCache(){ localStorage.setItem("decryptedCache", JSON.stringify(decryptedCache)) }
 
 async function kdf(input){ const buf=await crypto.subtle.digest("SHA-256", input); return new Uint8Array(buf) }
 
@@ -170,7 +171,7 @@ async function loadOrCreateKeypair(){
 
 async function generateEphemeral(){ return await crypto.subtle.generateKey({name:"ECDH", namedCurve:"P-256"}, true, ["deriveBits","deriveKey"]) }
 
-// ===== INIT SESSION (только один раз) =====
+// ===== INIT SESSION =====
 async function initSession(user){
   if(sessions[user]) return sessions[user]
 
@@ -192,7 +193,7 @@ async function initSession(user){
   return sessions[user]
 }
 
-// ===== ENCRYPT / DECRYPT (без изменений) =====
+// ===== ENCRYPT / DECRYPT =====
 async function encrypt(chatId, msg){
   let s = await initSession(currentUser)
   if(!s) throw new Error(`Нет сессии с ${currentUser}`)
@@ -276,7 +277,7 @@ async function start(){
   loadUsers()
   setInterval(loadUsers,3000)
   poll()
-  alert("READY "+myName+" — Stable Double Ratchet V48.3")
+  alert("READY "+myName+" — Stable Double Ratchet V48.4")
 }
 
 // ===== EXPORT / IMPORT =====
@@ -324,12 +325,12 @@ async function publish(){
   })
 }
 
-// ===== LOAD HISTORY (теперь использует кэш) =====
+// ===== LOAD HISTORY + REPLAY (главное исправление) =====
 async function loadHistory(){
   if(!currentUser) return
   const chatId = await getChatId(myName, currentUser)
 
-  // Если уже есть кэш — просто рендерим
+  // Кэш уже есть — просто рендерим
   if(decryptedCache[chatId]){
     document.getElementById("chat").innerHTML = ""
     decryptedCache[chatId].forEach(m => render(m, m.from === myName))
@@ -338,13 +339,17 @@ async function loadHistory(){
     return
   }
 
-  // Первый раз — расшифровываем всё
+  // Первый раз — полный replay ratchet
   reactionsMap={}; reactionDedup.clear(); seen.clear()
   const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId+"&order=created_at.asc",{headers:{apikey:KEY}})
   const list=await r.json()
 
   document.getElementById("chat").innerHTML=""
   decryptedCache[chatId] = []
+
+  // Сбрасываем сессию и проходим все сообщения по порядку
+  if(sessions[currentUser]) delete sessions[currentUser]
+  saveSessions()
 
   for(const m of list){
     seen.add(m.id)
@@ -353,6 +358,7 @@ async function loadHistory(){
     decryptedCache[chatId].push(msg)
     if(msg.type==="reaction"){ applyReaction(msg) } else { render(msg, msg.from===myName) }
   }
+  saveCache()
   updateReactionsUI()
   console.log(`✅ Загружена и закеширована история (${list.length} сообщений)`)
 }
@@ -374,10 +380,11 @@ function poll(){
       decryptedCache[chatId].push(msg)
       if(msg.type==="reaction"){ applyReaction(msg); updateReactionsUI() } else { render(msg, msg.from===myName) }
     }
+    saveCache()
   },1500)
 }
 
-// ===== SEND, REACTIONS, UI (без изменений) =====
+// ===== SEND, REACTIONS, UI =====
 async function send(){
   if(!currentUser) return
   const text=document.getElementById("msg").value
