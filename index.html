@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V46.1</title>
+<title>Anon Signal V47</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -142,38 +142,123 @@ let keypair
   
 const EMOJIS=["👍","🔥","😂","❤️","😮","😢"]
 
-// ===== E2E =====
+// ===== CRYPTO CORE =====
 
-let sessionKeys={}
+let sessions = JSON.parse(localStorage.getItem("sessions")||"{}")
 
-async function getSessionKey(chatId){
-  if(sessionKeys[chatId]) return sessionKeys[chatId]
-
-  const raw=await crypto.subtle.digest("SHA-256", new TextEncoder().encode(chatId))
-  const key=await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt","decrypt"])
-
-  sessionKeys[chatId]=key
-  return key
+function saveSessions(){
+  localStorage.setItem("sessions", JSON.stringify(sessions))
 }
 
-async function encrypt(chatId, obj){
-  const key=await getSessionKey(chatId)
-  const iv=crypto.getRandomValues(new Uint8Array(12))
+async function kdf(input){
+  const buf=await crypto.subtle.digest("SHA-256", input)
+  return new Uint8Array(buf)
+}
 
-  const encoded=new TextEncoder().encode(JSON.stringify(obj))
-  const cipher=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,encoded)
+// ===== X3DH INIT =====
+
+async function initSession(user){
+
+  if(sessions[user]) return sessions[user]
+
+  const id=(await hashStr(user)).slice(0,32)
+
+  const r=await fetch(URL+"/rest/v1/users?id=eq."+id,{headers:{apikey:KEY}})
+  const d=await r.json()
+  if(!d[0]) return
+
+  const remotePub=await crypto.subtle.importKey(
+    "jwk",
+    JSON.parse(d[0].pubkey),
+    {name:"ECDH",namedCurve:"P-256"},
+    true, []
+  )
+
+  const shared=await crypto.subtle.deriveBits(
+    {name:"ECDH",public:remotePub},
+    keypair.privateKey,
+    256
+  )
+
+  const root = await kdf(shared)
+
+  sessions[user]={
+    rootKey:Array.from(root),
+    sendChain:Array.from(root),
+    recvChain:Array.from(root),
+    Ns:0,
+    Nr:0
+  }
+
+  saveSessions()
+  return sessions[user]
+}
+
+// ===== ENCRYPT =====
+
+async function encrypt(chatId, msg){
+
+  const s = await initSession(currentUser)
+
+  let chain = new Uint8Array(s.sendChain)
+  chain = await kdf(chain)
+  s.sendChain = Array.from(chain)
+  s.Ns++
+
+  const key = await crypto.subtle.importKey("raw", chain, "AES-GCM", false, ["encrypt"])
+
+  const iv=crypto.getRandomValues(new Uint8Array(12))
+  const enc=new TextEncoder().encode(JSON.stringify(msg))
+
+  const cipher=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,enc)
+
+  saveSessions()
 
   return {
     data:btoa(String.fromCharCode(...new Uint8Array(cipher))),
-    iv:Array.from(iv)
+    iv:Array.from(iv),
+    dh_pub: await crypto.subtle.exportKey("jwk", keypair.publicKey),
+    n:s.Ns,
+    pn:s.Nr
   }
 }
 
-async function decrypt(chatId, data, iv){
+// ===== DECRYPT =====
+
+async function decrypt(chatId, data, iv, payload){
+
+  const s = await initSession(currentUser)
+
+  if(payload.dh_pub){
+    const remote=await crypto.subtle.importKey(
+      "jwk",
+      payload.dh_pub,
+      {name:"ECDH",namedCurve:"P-256"},
+      true, []
+    )
+
+    const shared=await crypto.subtle.deriveBits(
+      {name:"ECDH",public:remote},
+      keypair.privateKey,
+      256
+    )
+
+    const root = await kdf(shared)
+    s.recvChain = Array.from(root)
+    s.Nr=0
+  }
+
+  let chain=new Uint8Array(s.recvChain)
+  chain=await kdf(chain)
+  s.recvChain=Array.from(chain)
+  s.Nr++
+
+  const key=await crypto.subtle.importKey("raw",chain,"AES-GCM",false,["decrypt"])
+
   try{
-    const key=await getSessionKey(chatId)
-    const bytes=Uint8Array.from(atob(data), c=>c.charCodeAt(0))
+    const bytes=Uint8Array.from(atob(data),c=>c.charCodeAt(0))
     const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv:new Uint8Array(iv)},key,bytes)
+    saveSessions()
     return JSON.parse(new TextDecoder().decode(plain))
   }catch(e){
     return null
@@ -296,7 +381,10 @@ async function send(){
       recipient:chatId,
       sender:myName,
       data:enc.data,
-      iv:enc.iv
+      iv:enc.iv,
+      dh_pub:enc.dh_pub,
+      n:enc.n,
+      pn:enc.pn
     })
   })
 
@@ -387,7 +475,7 @@ async function loadHistory(){
   for(const m of list){
     seen.add(m.id)
 
-    const msg=await decrypt(chatId,m.data,m.iv)
+    const msg=await decrypt(chatId,m.data,m.iv,m)
     if(!msg) continue
 
     if(msg.type==="reaction"){
@@ -407,7 +495,6 @@ function poll(){
     if(!currentUser) return
 
     const chatId=await getChatId(myName,currentUser)
-
     const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId,{headers:{apikey:KEY}})
     const list=await r.json()
 
@@ -415,7 +502,7 @@ function poll(){
       if(seen.has(m.id)) continue
       seen.add(m.id)
 
-      const msg=await decrypt(chatId,m.data,m.iv)
+      const msg=await decrypt(chatId,m.data,m.iv,m)
       if(!msg) continue
 
       if(msg.type==="reaction"){
