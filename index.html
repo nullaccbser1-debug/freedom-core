@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V48.4 — Stable Double Ratchet</title>
+<title>Anon Signal V48.5 — Stable Double Ratchet</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -125,7 +125,7 @@ const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
 if(location.protocol==="file:"||location.protocol==="content:"){
   setTimeout(()=>location.href=ONLINE_URL,700)
 }
-document.getElementById("mode").innerText = "🟢 ONLINE (V48.4 Stable)"
+document.getElementById("mode").innerText = "🟢 ONLINE (V48.5 Stable)"
 
 // ===== CONFIG =====
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
@@ -141,7 +141,6 @@ let reactionTarget=null
 let reactionDedup=new Set()
 let keypair
 
-// КЭШ расшифрованных сообщений (сохраняется в localStorage)
 let decryptedCache = JSON.parse(localStorage.getItem("decryptedCache") || "{}")
 
 const EMOJIS=["👍","🔥","😂","❤️","😮","😢"]
@@ -277,7 +276,7 @@ async function start(){
   loadUsers()
   setInterval(loadUsers,3000)
   poll()
-  alert("READY "+myName+" — Stable Double Ratchet V48.4")
+  alert("READY "+myName+" — Stable Double Ratchet V48.5")
 }
 
 // ===== EXPORT / IMPORT =====
@@ -325,12 +324,11 @@ async function publish(){
   })
 }
 
-// ===== LOAD HISTORY + REPLAY (главное исправление) =====
+// ===== LOAD HISTORY — FULL REPLAY (исправлено) =====
 async function loadHistory(){
   if(!currentUser) return
   const chatId = await getChatId(myName, currentUser)
 
-  // Кэш уже есть — просто рендерим
   if(decryptedCache[chatId]){
     document.getElementById("chat").innerHTML = ""
     decryptedCache[chatId].forEach(m => render(m, m.from === myName))
@@ -339,7 +337,6 @@ async function loadHistory(){
     return
   }
 
-  // Первый раз — полный replay ratchet
   reactionsMap={}; reactionDedup.clear(); seen.clear()
   const r=await fetch(URL+"/rest/v1/messages?recipient=eq."+chatId+"&order=created_at.asc",{headers:{apikey:KEY}})
   const list=await r.json()
@@ -347,13 +344,14 @@ async function loadHistory(){
   document.getElementById("chat").innerHTML=""
   decryptedCache[chatId] = []
 
-  // Сбрасываем сессию и проходим все сообщения по порядку
+  // Сбрасываем сессию и создаём начальную ОДИН раз
   if(sessions[currentUser]) delete sessions[currentUser]
   saveSessions()
+  const initialSession = await initSession(currentUser)
 
   for(const m of list){
     seen.add(m.id)
-    const msg = await decrypt(chatId, m.data, m.iv, m)
+    const msg = await decrypt(chatId, m.data, m.iv, m)   // теперь использует одну и ту же сессию
     if(!msg) continue
     decryptedCache[chatId].push(msg)
     if(msg.type==="reaction"){ applyReaction(msg) } else { render(msg, msg.from===myName) }
@@ -384,7 +382,7 @@ function poll(){
   },1500)
 }
 
-// ===== SEND, REACTIONS, UI =====
+// ===== SEND, REACTIONS, UI (без изменений) =====
 async function send(){
   if(!currentUser) return
   const text=document.getElementById("msg").value
