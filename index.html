@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V48.6 — Stable Double Ratchet</title>
+<title>Anon Signal V47.6 — Stable Symmetric Ratchet</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -125,7 +125,7 @@ const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
 if(location.protocol==="file:"||location.protocol==="content:"){
   setTimeout(()=>location.href=ONLINE_URL,700)
 }
-document.getElementById("mode").innerText = "🟢 ONLINE (V48.6 Stable)"
+document.getElementById("mode").innerText = "🟢 ONLINE (V47.6 Stable)"
 
 // ===== CONFIG =====
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
@@ -141,11 +141,12 @@ let reactionTarget=null
 let reactionDedup=new Set()
 let keypair
 
+// КЭШ расшифрованных сообщений (сохраняется)
 let decryptedCache = JSON.parse(localStorage.getItem("decryptedCache") || "{}")
 
 const EMOJIS=["👍","🔥","😂","❤️","😮","😢"]
 
-// ===== CRYPTO CORE =====
+// ===== CRYPTO CORE (симметричный Ratchet — стабильный) =====
 let sessions = JSON.parse(localStorage.getItem("sessions")||"{}")
 
 function saveSessions(){ localStorage.setItem("sessions", JSON.stringify(sessions)) }
@@ -168,9 +169,7 @@ async function loadOrCreateKeypair(){
   return kp
 }
 
-async function generateEphemeral(){ return await crypto.subtle.generateKey({name:"ECDH", namedCurve:"P-256"}, true, ["deriveBits","deriveKey"]) }
-
-// ===== INIT SESSION =====
+// ===== INIT SESSION (X3DH) =====
 async function initSession(user){
   if(sessions[user]) return sessions[user]
 
@@ -184,32 +183,15 @@ async function initSession(user){
   const shared=await crypto.subtle.deriveBits({name:"ECDH",public:remotePub}, keypair.privateKey, 256)
   const root = await kdf(shared)
 
-  const initialEphemeral = await generateEphemeral()
-  const ephemeralPrivJWK = await crypto.subtle.exportKey("jwk", initialEphemeral.privateKey)
-
-  sessions[user]={ rootKey:Array.from(root), sendChain:Array.from(root), recvChain:Array.from(root), Ns:0, Nr:0, ourEphemeralPriv: ephemeralPrivJWK, theirLastDHPub: null }
+  sessions[user]={ rootKey:Array.from(root), sendChain:Array.from(root), recvChain:Array.from(root), Ns:0, Nr:0 }
   saveSessions()
   return sessions[user]
 }
 
-// ===== ENCRYPT =====
+// ===== ENCRYPT / DECRYPT (симметричный Ratchet) =====
 async function encrypt(chatId, msg){
   let s = await initSession(currentUser)
   if(!s) throw new Error(`Нет сессии с ${currentUser}`)
-
-  let newRoot = new Uint8Array(s.rootKey)
-  const newEphemeral = await generateEphemeral()
-  const newDHPub = await crypto.subtle.exportKey("jwk", newEphemeral.publicKey)
-
-  if(s.theirLastDHPub){
-    const remote = await crypto.subtle.importKey("jwk", s.theirLastDHPub, {name:"ECDH",namedCurve:"P-256"}, true, [])
-    const shared = await crypto.subtle.deriveBits({name:"ECDH",public:remote}, newEphemeral.privateKey, 256)
-    const dh = await kdf(shared)
-    newRoot = await kdf(new Uint8Array([...s.rootKey, ...dh]))
-  }
-
-  s.rootKey = Array.from(newRoot)
-  s.ourEphemeralPriv = await crypto.subtle.exportKey("jwk", newEphemeral.privateKey)
 
   let chain = new Uint8Array(s.sendChain)
   chain = await kdf(chain)
@@ -222,32 +204,12 @@ async function encrypt(chatId, msg){
   const cipher=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,enc)
 
   saveSessions()
-  return { data:btoa(String.fromCharCode(...new Uint8Array(cipher))), iv:Array.from(iv), dh_pub:newDHPub, n:s.Ns, pn:s.Nr }
+  return { data:btoa(String.fromCharCode(...new Uint8Array(cipher))), iv:Array.from(iv) }
 }
 
-// ===== DECRYPT (главное исправление) =====
 async function decrypt(chatId, data, iv, payload){
   let s = await initSession(currentUser)
   if(!s) return null
-
-  if(payload.dh_pub){
-    try{
-      const remote = await crypto.subtle.importKey("jwk", payload.dh_pub, {name:"ECDH",namedCurve:"P-256"}, true, [])
-      const ourEphem = await crypto.subtle.importKey("jwk", s.ourEphemeralPriv, {name:"ECDH",namedCurve:"P-256"}, true, ["deriveBits"])
-      const shared = await crypto.subtle.deriveBits({name:"ECDH",public:remote}, ourEphem, 256)
-      const dh = await kdf(shared)
-      const newRoot = await kdf(new Uint8Array([...s.rootKey, ...dh]))
-
-      s.rootKey = Array.from(newRoot)
-      // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: сбрасываем обе цепочки на новый root
-      s.sendChain = Array.from(newRoot)
-      s.recvChain = Array.from(newRoot)
-
-      s.theirLastDHPub = payload.dh_pub
-      const newEphem = await generateEphemeral()
-      s.ourEphemeralPriv = await crypto.subtle.exportKey("jwk", newEphem.privateKey)
-    }catch(e){ console.warn("DH-ratchet failed", e); }
-  }
 
   let chain=new Uint8Array(s.recvChain)
   chain=await kdf(chain)
@@ -262,7 +224,7 @@ async function decrypt(chatId, data, iv, payload){
     saveSessions()
     return JSON.parse(new TextDecoder().decode(plain))
   }catch(e){
-    console.warn("Decrypt failed for msg", e)
+    console.warn("Decrypt failed", e)
     return null
   }
 }
@@ -282,7 +244,7 @@ async function start(){
   loadUsers()
   setInterval(loadUsers,3000)
   poll()
-  alert("READY "+myName+" — Stable Double Ratchet V48.6")
+  alert("READY "+myName+" — Stable Symmetric Ratchet V47.6")
 }
 
 // ===== EXPORT / IMPORT =====
@@ -330,7 +292,7 @@ async function publish(){
   })
 }
 
-// ===== LOAD HISTORY + REPLAY =====
+// ===== LOAD HISTORY + CACHE =====
 async function loadHistory(){
   if(!currentUser) return
   const chatId = await getChatId(myName, currentUser)
@@ -349,10 +311,6 @@ async function loadHistory(){
 
   document.getElementById("chat").innerHTML=""
   decryptedCache[chatId] = []
-
-  if(sessions[currentUser]) delete sessions[currentUser]
-  saveSessions()
-  await initSession(currentUser)
 
   for(const m of list){
     seen.add(m.id)
@@ -387,7 +345,7 @@ function poll(){
   },1500)
 }
 
-// ===== SEND, REACTIONS =====
+// ===== SEND, REACTIONS, UI =====
 async function send(){
   if(!currentUser) return
   const text=document.getElementById("msg").value
@@ -395,7 +353,7 @@ async function send(){
   let msg={id:crypto.randomUUID(),from:myName,text,time:Date.now(),type:"text",replyTo:replyTo?trimReplyChain(replyTo):null,forwardFrom:forwardMsg?forwardMsg.from:null}
   render(msg,true)
   const enc=await encrypt(chatId,msg)
-  await fetch(URL+"/rest/v1/messages",{method:"POST",headers:{apikey:KEY,"Content-Type":"application/json"},body:JSON.stringify({recipient:chatId,sender:myName,data:enc.data,iv:enc.iv,dh_pub:enc.dh_pub,n:enc.n,pn:enc.pn})})
+  await fetch(URL+"/rest/v1/messages",{method:"POST",headers:{apikey:KEY,"Content-Type":"application/json"},body:JSON.stringify({recipient:chatId,sender:myName,data:enc.data,iv:enc.iv})})
   document.getElementById("msg").value=""
   clearReply()
   clearForward()
@@ -406,7 +364,7 @@ async function sendReaction(emoji){
   const chatId=await getChatId(myName,currentUser)
   const msg={id:crypto.randomUUID(),type:"reaction",target:reactionTarget,emoji,from:myName,time:Date.now()}
   const enc=await encrypt(chatId,msg)
-  await fetch(URL+"/rest/v1/messages",{method:"POST",headers:{apikey:KEY,"Content-Type":"application/json"},body:JSON.stringify({recipient:chatId,sender:myName,data:enc.data,iv:enc.iv,dh_pub:enc.dh_pub,n:enc.n,pn:enc.pn})})
+  await fetch(URL+"/rest/v1/messages",{method:"POST",headers:{apikey:KEY,"Content-Type":"application/json"},body:JSON.stringify({recipient:chatId,sender:myName,data:enc.data,iv:enc.iv})})
   applyReaction(msg)
   updateReactionsUI()
   document.getElementById("emojiPicker").style.display="none"
@@ -432,7 +390,6 @@ function updateReactionsUI(){
   })
 }
 
-// ===== UI (исправлено отображение реакций) =====
 function showPicker(id){
   reactionTarget=id
   const picker=document.getElementById("emojiPicker")
