@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V48.5 — Stable Double Ratchet</title>
+<title>Anon Signal V48.6 — Stable Double Ratchet</title>
 
 <style>
 body { margin:0; font-family:system-ui; background:#111; color:white; }
@@ -125,7 +125,7 @@ const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
 if(location.protocol==="file:"||location.protocol==="content:"){
   setTimeout(()=>location.href=ONLINE_URL,700)
 }
-document.getElementById("mode").innerText = "🟢 ONLINE (V48.5 Stable)"
+document.getElementById("mode").innerText = "🟢 ONLINE (V48.6 Stable)"
 
 // ===== CONFIG =====
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
@@ -192,7 +192,7 @@ async function initSession(user){
   return sessions[user]
 }
 
-// ===== ENCRYPT / DECRYPT =====
+// ===== ENCRYPT =====
 async function encrypt(chatId, msg){
   let s = await initSession(currentUser)
   if(!s) throw new Error(`Нет сессии с ${currentUser}`)
@@ -225,6 +225,7 @@ async function encrypt(chatId, msg){
   return { data:btoa(String.fromCharCode(...new Uint8Array(cipher))), iv:Array.from(iv), dh_pub:newDHPub, n:s.Ns, pn:s.Nr }
 }
 
+// ===== DECRYPT (главное исправление) =====
 async function decrypt(chatId, data, iv, payload){
   let s = await initSession(currentUser)
   if(!s) return null
@@ -236,7 +237,12 @@ async function decrypt(chatId, data, iv, payload){
       const shared = await crypto.subtle.deriveBits({name:"ECDH",public:remote}, ourEphem, 256)
       const dh = await kdf(shared)
       const newRoot = await kdf(new Uint8Array([...s.rootKey, ...dh]))
+
       s.rootKey = Array.from(newRoot)
+      // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: сбрасываем обе цепочки на новый root
+      s.sendChain = Array.from(newRoot)
+      s.recvChain = Array.from(newRoot)
+
       s.theirLastDHPub = payload.dh_pub
       const newEphem = await generateEphemeral()
       s.ourEphemeralPriv = await crypto.subtle.exportKey("jwk", newEphem.privateKey)
@@ -276,7 +282,7 @@ async function start(){
   loadUsers()
   setInterval(loadUsers,3000)
   poll()
-  alert("READY "+myName+" — Stable Double Ratchet V48.5")
+  alert("READY "+myName+" — Stable Double Ratchet V48.6")
 }
 
 // ===== EXPORT / IMPORT =====
@@ -324,7 +330,7 @@ async function publish(){
   })
 }
 
-// ===== LOAD HISTORY — FULL REPLAY (исправлено) =====
+// ===== LOAD HISTORY + REPLAY =====
 async function loadHistory(){
   if(!currentUser) return
   const chatId = await getChatId(myName, currentUser)
@@ -344,14 +350,13 @@ async function loadHistory(){
   document.getElementById("chat").innerHTML=""
   decryptedCache[chatId] = []
 
-  // Сбрасываем сессию и создаём начальную ОДИН раз
   if(sessions[currentUser]) delete sessions[currentUser]
   saveSessions()
-  const initialSession = await initSession(currentUser)
+  await initSession(currentUser)
 
   for(const m of list){
     seen.add(m.id)
-    const msg = await decrypt(chatId, m.data, m.iv, m)   // теперь использует одну и ту же сессию
+    const msg = await decrypt(chatId, m.data, m.iv, m)
     if(!msg) continue
     decryptedCache[chatId].push(msg)
     if(msg.type==="reaction"){ applyReaction(msg) } else { render(msg, msg.from===myName) }
@@ -382,7 +387,7 @@ function poll(){
   },1500)
 }
 
-// ===== SEND, REACTIONS, UI (без изменений) =====
+// ===== SEND, REACTIONS =====
 async function send(){
   if(!currentUser) return
   const text=document.getElementById("msg").value
@@ -427,6 +432,7 @@ function updateReactionsUI(){
   })
 }
 
+// ===== UI (исправлено отображение реакций) =====
 function showPicker(id){
   reactionTarget=id
   const picker=document.getElementById("emojiPicker")
@@ -448,9 +454,20 @@ function render(m,me){
   d.appendChild(btn)
   if(m.forwardFrom){ const f=document.createElement("div"); f.className="forwardBox"; f.innerText="Forwarded from "+m.forwardFrom; d.appendChild(f) }
   if(m.replyTo) renderReplyChain(d, m.replyTo)
-  const text=document.createElement("div"); text.innerText=m.from+": "+m.text
-  const time=document.createElement("div"); time.className="time"; time.innerText=formatTime(m.time)
-  d.appendChild(text); d.appendChild(time)
+
+  const text=document.createElement("div")
+  if(m.type==="reaction"){
+    text.innerText = m.from + " reacted with " + m.emoji
+  } else {
+    text.innerText = m.from + ": " + (m.text || "")
+  }
+
+  const time=document.createElement("div")
+  time.className="time"
+  time.innerText=formatTime(m.time)
+
+  d.appendChild(text)
+  d.appendChild(time)
   document.getElementById("chat").appendChild(d)
 }
 
