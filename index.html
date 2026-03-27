@@ -2,10 +2,9 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Anon Signal V49 — Full Double Ratchet (Signal-level)</title>
+<title>Anon Signal V49.1 — Full Double Ratchet (Signal-level, stable)</title>
 
 <style>
-/* Ваш стиль полностью сохранён */
 body { margin:0; font-family:system-ui; background:#111; color:white; }
 #app { display:flex; height:100vh; }
 #sidebar { width:240px; background:#1e1e1e; padding:10px; }
@@ -59,7 +58,7 @@ const ONLINE_URL = "https://nullaccbser1-debug.github.io/freedom-core/"
 if(location.protocol==="file:"||location.protocol==="content:"){
   setTimeout(()=>location.href=ONLINE_URL,700)
 }
-document.getElementById("mode").innerText = "🟢 ONLINE (V49 — Full Signal Double Ratchet)"
+document.getElementById("mode").innerText = "🟢 ONLINE (V49.1 Full Double Ratchet)"
 
 // ===== CONFIG =====
 const URL="https://ubfytoriwbhglblxdzto.supabase.co"
@@ -79,7 +78,7 @@ let decryptedCache = JSON.parse(localStorage.getItem("decryptedCache") || "{}")
 
 const EMOJIS=["👍","🔥","😂","❤️","😮","😢"]
 
-// ===== CRYPTO — FULL DOUBLE RATCHET =====
+// ===== CRYPTO CORE — FULL DOUBLE RATCHET =====
 let sessions = JSON.parse(localStorage.getItem("sessions")||"{}")
 
 function saveSessions(){ localStorage.setItem("sessions", JSON.stringify(sessions)) }
@@ -126,7 +125,7 @@ async function initSession(user){
   return sessions[user]
 }
 
-// ===== ENCRYPT / DECRYPT (Full Double Ratchet) =====
+// ===== ENCRYPT =====
 async function encrypt(chatId, msg){
   let s = await initSession(currentUser)
   if(!s) throw new Error(`Нет сессии с ${currentUser}`)
@@ -159,26 +158,25 @@ async function encrypt(chatId, msg){
   return { data:btoa(String.fromCharCode(...new Uint8Array(cipher))), iv:Array.from(iv), dh_pub:newDHPub, n:s.Ns, pn:s.Nr }
 }
 
+// ===== DECRYPT =====
 async function decrypt(chatId, data, iv, payload){
   let s = await initSession(currentUser)
   if(!s) return null
 
   if(payload.dh_pub){
-    try{
-      const remote = await crypto.subtle.importKey("jwk", payload.dh_pub, {name:"ECDH",namedCurve:"P-256"}, true, [])
-      const ourEphem = await crypto.subtle.importKey("jwk", s.ourEphemeralPriv, {name:"ECDH",namedCurve:"P-256"}, true, ["deriveBits"])
-      const shared = await crypto.subtle.deriveBits({name:"ECDH",public:remote}, ourEphem, 256)
-      const dh = await kdf(shared)
-      const newRoot = await kdf(new Uint8Array([...s.rootKey, ...dh]))
+    const remote = await crypto.subtle.importKey("jwk", payload.dh_pub, {name:"ECDH",namedCurve:"P-256"}, true, [])
+    const ourEphem = await crypto.subtle.importKey("jwk", s.ourEphemeralPriv, {name:"ECDH",namedCurve:"P-256"}, true, ["deriveBits"])
+    const shared = await crypto.subtle.deriveBits({name:"ECDH",public:remote}, ourEphem, 256)
+    const dh = await kdf(shared)
+    const newRoot = await kdf(new Uint8Array([...s.rootKey, ...dh]))
 
-      s.rootKey = Array.from(newRoot)
-      s.sendChain = Array.from(newRoot)   // reset
-      s.recvChain = Array.from(newRoot)   // reset
+    s.rootKey = Array.from(newRoot)
+    s.sendChain = Array.from(newRoot)
+    s.recvChain = Array.from(newRoot)
+    s.theirLastDHPub = payload.dh_pub
 
-      s.theirLastDHPub = payload.dh_pub
-      const newEphem = await generateEphemeral()
-      s.ourEphemeralPriv = await crypto.subtle.exportKey("jwk", newEphem.privateKey)
-    }catch(e){ console.warn("DH-ratchet failed", e); }
+    const newEphem = await generateEphemeral()
+    s.ourEphemeralPriv = await crypto.subtle.exportKey("jwk", newEphem.privateKey)
   }
 
   let chain=new Uint8Array(s.recvChain)
@@ -194,17 +192,18 @@ async function decrypt(chatId, data, iv, payload){
     saveSessions()
     return JSON.parse(new TextDecoder().decode(plain))
   }catch(e){
-    console.warn("Decrypt failed for msg", e)
+    console.warn("Decrypt failed", e)
     return null
   }
 }
 
-// ===== ОСТАЛЬНОЙ КОД V46.1 (без изменений) =====
+// ===== UTILS (из V46.1) =====
 async function hashStr(str){ const buf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(str)); return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("") }
 async function getChatId(a,b){ return (await hashStr([a,b].sort().join("|"))).slice(0,32) }
 function formatTime(ts){ return new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) }
 function trimReplyChain(r, depth=0){ if(!r || depth>2) return null; return {id:r.id, from:r.from, text:r.text, replyTo: trimReplyChain(r.replyTo, depth+1)} }
 
+// ===== START =====
 async function start(){
   myName=document.getElementById("name").value||"anon"
   myId=(await hashStr(myName)).slice(0,32)
@@ -213,7 +212,7 @@ async function start(){
   loadUsers()
   setInterval(loadUsers,3000)
   poll()
-  alert("READY "+myName+" — Full Double Ratchet V49")
+  alert("READY "+myName+" — Full Double Ratchet V49.1")
 }
 
 function exportKeys(){
@@ -259,6 +258,7 @@ async function publish(){
   })
 }
 
+// ===== LOAD HISTORY + REPLAY =====
 async function loadHistory(){
   if(!currentUser) return
   const chatId = await getChatId(myName, currentUser)
@@ -267,7 +267,7 @@ async function loadHistory(){
     document.getElementById("chat").innerHTML = ""
     decryptedCache[chatId].forEach(m => render(m, m.from === myName))
     updateReactionsUI()
-    console.log(`✅ Загружена история из кэша (${decryptedCache[chatId].length} сообщений)`)
+    console.log(`✅ Загружена история из кэша (${decryptedCache[chatId].length})`)
     return
   }
 
@@ -291,7 +291,7 @@ async function loadHistory(){
   }
   saveCache()
   updateReactionsUI()
-  console.log(`✅ Загружена и закеширована история (${list.length} сообщений)`)
+  console.log(`✅ Загружена и закеширована история (${list.length})`)
 }
 
 function poll(){
@@ -315,6 +315,7 @@ function poll(){
   },1500)
 }
 
+// ===== SEND / REACTIONS / UI (из V46.1, без изменений) =====
 async function send(){
   if(!currentUser) return
   const text=document.getElementById("msg").value
