@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>Kremlin 3D — Pixeldrain</title>
+    <style>
+        body { margin:0; overflow:hidden; background:#000; font-family:Arial,sans-serif; }
+        canvas { display:block; }
+        #loading {
+            position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+            background:rgba(0,0,0,0.92); color:#fff; padding:25px 35px; border-radius:15px;
+            font-size:18px; text-align:center; box-shadow:0 0 40px rgba(0,180,255,0.6); z-index:100;
+            max-width:92%;
+        }
+        #info {
+            position:absolute; top:10px; left:10px; background:rgba(0,0,0,0.7);
+            color:#0ff; padding:8px 12px; border-radius:8px; font-size:13px; z-index:100;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        👆 Один палец — вращать • Два пальца — зум<br>
+        Кремль загружается (большой файл ~300-500 МБ)...
+    </div>
+
+    <div id="loading">
+        Загрузка Kremlin.glb с Pixeldrain<br>
+        <span id="loading-text">0%</span>
+        <div style="margin-top:12px;height:8px;background:#222;border-radius:4px;overflow:hidden;">
+            <div id="progress-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#00ddff,#0099ff);transition:width .3s;"></div>
+        </div>
+        <small style="display:block;margin-top:10px;color:#88eeff;">Может занять 40–120 секунд при первом запуске</small>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.min.js';
+        import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/controls/OrbitControls.js';
+        import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/loaders/GLTFLoader.js';
+
+        // Прямая ссылка с Pixeldrain
+        const directUrl = 'https://pixeldrain.com/api/file/XEucjdm9';
+
+        // Несколько CORS-прокси — пробуем по очереди, если один не сработает
+        const proxies = [
+            'https://corsproxy.io/?' + encodeURIComponent(directUrl),
+            'https://api.allorigins.win/raw?url=' + encodeURIComponent(directUrl),
+            directUrl  // пробуем без прокси в последнюю очередь
+        ];
+
+        let scene, camera, renderer, controls, model;
+        let loadingDiv, progressBar, loadingText;
+        let currentProxyIndex = 0;
+
+        async function tryLoadWithProxy() {
+            const MODEL_URL = proxies[currentProxyIndex];
+            console.log(`🔄 Пробуем прокси ${currentProxyIndex + 1}:`, MODEL_URL);
+
+            const loader = new GLTFLoader();
+
+            loader.load(
+                MODEL_URL,
+                (gltf) => {
+                    model = gltf.scene;
+                    const box = new THREE.Box3().setFromObject(model);
+                    const center = box.getCenter(new THREE.Vector3());
+                    const size = box.getSize(new THREE.Vector3());
+                    const maxDim = Math.max(size.x, size.y, size.z);
+                    model.position.sub(center);
+                    model.scale.setScalar(1200 / maxDim);
+                    scene.add(model);
+
+                    loadingDiv.style.display = 'none';
+                    console.log('✅ Kremlin.glb успешно загружен!');
+                },
+                (progress) => {
+                    if (progress.total) {
+                        const percent = Math.round((progress.loaded / progress.total) * 100);
+                        loadingText.textContent = percent + '%';
+                        progressBar.style.width = percent + '%';
+                    }
+                },
+                (error) => {
+                    console.warn('❌ Прокси не сработал:', error);
+                    currentProxyIndex++;
+                    if (currentProxyIndex < proxies.length) {
+                        tryLoadWithProxy(); // пробуем следующий прокси
+                    } else {
+                        loadingText.innerHTML = `ОШИБКА<br><small style="color:#ff8888">Не удалось загрузить через прокси.<br>
+                        Попробуй скачать файл на телефон и открыть локально.<br>
+                        Или скажи мне — перейдём на GDevelop.</small>`;
+                        progressBar.style.background = '#ff4444';
+                    }
+                }
+            );
+        }
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x112233);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200000);
+            camera.position.set(0, 800, 2500);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.body.appendChild(renderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.12;
+            controls.minDistance = 100;
+            controls.maxDistance = 80000;
+            controls.target.set(0, 200, 0);
+
+            // Освещение
+            scene.add(new THREE.HemisphereLight(0xaaccff, 0x334466, 1.3));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+            dirLight.position.set(15000, 20000, 10000);
+            scene.add(dirLight);
+            scene.add(new THREE.AmbientLight(0x404060, 0.7));
+
+            loadingDiv = document.getElementById('loading');
+            progressBar = document.getElementById('progress-bar');
+            loadingText = document.getElementById('loading-text');
+
+            tryLoadWithProxy();
+
+            function animate() {
+                requestAnimationFrame(animate);
+                controls.update();
+                renderer.render(scene, camera);
+            }
+            animate();
+
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>
