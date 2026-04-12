@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Freedom Core — Кремль 3D</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.85);
+            color: #fff;
+            padding: 20px 30px;
+            border-radius: 12px;
+            font-size: 18px;
+            text-align: center;
+            box-shadow: 0 0 30px rgba(0, 150, 255, 0.5);
+            z-index: 100;
+            white-space: nowrap;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            pointer-events: none;
+            z-index: 100;
+        }
+        #progress {
+            margin-top: 10px;
+            height: 6px;
+            background: #222;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        #progress-bar {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #00ccff, #0099ff);
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        Мышь — вращать • Колёсико — приближать/отдалять<br>
+        Зажать Shift + мышь — панорамирование<br>
+        Кремль загружается…
+    </div>
+    <div id="loading">
+        Загрузка Kremlin.glb<br>
+        <span id="loading-text">0%</span>
+        <div id="progress"><div id="progress-bar"></div></div>
+        <small style="display:block;margin-top:8px;color:#88ccff;">Файл большой (300–500 МБ) — может занять 30–90 секунд</small>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.min.js';
+        import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/controls/OrbitControls.js';
+        import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/loaders/GLTFLoader.js';
+
+        let scene, camera, renderer, controls, model;
+        let loadingDiv, progressBar, loadingText;
+
+        async function init() {
+            // Сцена
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x112233); // тёмно-синий небо (для дня/ночи потом поменяем)
+
+            // Камера (дальний фрустум для огромной модели)
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200000);
+            camera.position.set(0, 800, 2500);
+
+            // Рендерер
+            renderer = new THREE.WebGLRenderer({
+                antialias: true,
+                alpha: false
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = false; // выключено для производительности на старте
+            document.body.appendChild(renderer.domElement);
+
+            // Управление
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.08;
+            controls.screenSpacePanning = false;
+            controls.minDistance = 50;
+            controls.maxDistance = 80000;
+            controls.maxPolarAngle = Math.PI * 0.95;
+            controls.target.set(0, 200, 0);
+
+            // Освещение (хорошо работает с любыми текстурами)
+            const hemiLight = new THREE.HemisphereLight(0x88ccff, 0x334466, 1.2);
+            scene.add(hemiLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
+            dirLight.position.set(12000, 18000, 8000);
+            dirLight.castShadow = false; // можно включить позже
+            scene.add(dirLight);
+
+            const ambient = new THREE.AmbientLight(0x404060, 0.6);
+            scene.add(ambient);
+
+            // Сетка для понимания масштаба
+            const grid = new THREE.GridHelper(10000, 50, 0x555555, 0x333333);
+            grid.position.y = -5;
+            scene.add(grid);
+
+            // Загрузчик модели
+            loadingDiv = document.getElementById('loading');
+            progressBar = document.getElementById('progress-bar');
+            loadingText = document.getElementById('loading-text');
+
+            const loader = new GLTFLoader();
+
+            loader.load(
+                './Kremlin.glb', // ← файл должен лежать рядом с index.html в репозитории
+                (gltf) => {
+                    model = gltf.scene;
+
+                    // Автоматически центрируем и немного масштабируем (если модель огромная)
+                    const box = new THREE.Box3().setFromObject(model);
+                    const center = box.getCenter(new THREE.Vector3());
+                    const size = box.getSize(new THREE.Vector3());
+                    const maxDim = Math.max(size.x, size.y, size.z);
+
+                    model.position.sub(center); // центрируем в 0,0,0
+                    const scaleFactor = 1200 / maxDim; // подгоняем под удобный масштаб
+                    model.scale.setScalar(scaleFactor);
+
+                    scene.add(model);
+
+                    // Прячем загрузку
+                    loadingDiv.style.display = 'none';
+
+                    console.log('%c✅ Kremlin.glb успешно загружен с текстурами!', 'color:#0f0;font-size:16px');
+                    console.log('Размер модели:', size);
+                },
+                (progress) => {
+                    // Прогресс-бар
+                    if (progress.total) {
+                        const percent = Math.round((progress.loaded / progress.total) * 100);
+                        loadingText.textContent = percent + '%';
+                        progressBar.style.width = percent + '%';
+                    }
+                },
+                (error) => {
+                    console.error('Ошибка загрузки Kremlin.glb:', error);
+                    loadingText.style.color = '#ff4444';
+                    loadingText.textContent = 'ОШИБКА ЗАГРУЗКИ';
+                    progressBar.style.background = '#ff0000';
+                }
+            );
+
+            // Анимационный цикл
+            function animate() {
+                requestAnimationFrame(animate);
+                controls.update();
+                renderer.render(scene, camera);
+            }
+            animate();
+
+            // Адаптация под размер окна
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+
+            console.log('%c🚀 Freedom Core — заготовка готова!', 'color:#0ff;font-size:18px');
+        }
+
+        // Запуск
+        init();
+    </script>
+</body>
+</html>
